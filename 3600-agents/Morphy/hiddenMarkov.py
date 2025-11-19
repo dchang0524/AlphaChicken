@@ -1,6 +1,9 @@
 from __future__ import annotations
 from typing import Dict, List, Tuple
 
+#TODO: Change to numpy for speed up
+
+
 # ----------------------------------------------------------------------
 # Sensor kernels (from the spec figure)
 # ----------------------------------------------------------------------
@@ -59,29 +62,56 @@ class TrapdoorBelief:
 
         self.collapsed_known_traps: set[Tuple[int, int]] = set()
 
-        self._init_uniform()
+        self._init_prob()
 
     # ------------------------------------------------------------------
     # Initialization / reset
     # ------------------------------------------------------------------
 
-    def _init_uniform(self) -> None:
-        """Reset beliefs to uniform on each parity."""
-        if self.even_squares:
-            p = 1.0 / len(self.even_squares)
-            self.p_even: Dict[Tuple[int, int], float] = {
-                pos: p for pos in self.even_squares
-            }
+    def _init_prob(self) -> None:
+        """Reset beliefs to match the trapdoor sampling distribution."""
+
+        dim = self.map_size
+
+        weights_even: Dict[Tuple[int, int], float] = {}
+        weights_odd: Dict[Tuple[int, int], float] = {}
+
+        for x in range(dim):
+            for y in range(dim):
+                # Compute the same weight pattern as in TrapdoorManager.choose_trapdoors
+                w = 0.0
+
+                # Outer allowed region: [2 : dim-2] in both axes => weight 1
+                if 2 <= x < dim - 2 and 2 <= y < dim - 2:
+                    w = 1.0
+
+                # Inner region: [3 : dim-3] => override with weight 2
+                if 3 <= x < dim - 3 and 3 <= y < dim - 3:
+                    w = 2.0
+
+                if w == 0.0:
+                    # These squares never get a trapdoor in the generator, so prior should be 0.
+                    continue
+
+                if (x + y) % 2 == 0:
+                    weights_even[(x, y)] = w
+                else:
+                    weights_odd[(x, y)] = w
+
+        # Normalize per parity
+        sum_even = sum(weights_even.values())
+        sum_odd = sum(weights_odd.values())
+
+        if sum_even > 0:
+            self.p_even = {pos: w / sum_even for pos, w in weights_even.items()}
         else:
             self.p_even = {}
 
-        if self.odd_squares:
-            p = 1.0 / len(self.odd_squares)
-            self.p_odd: Dict[Tuple[int, int], float] = {
-                pos: p for pos in self.odd_squares
-            }
+        if sum_odd > 0:
+            self.p_odd = {pos: w / sum_odd for pos, w in weights_odd.items()}
         else:
             self.p_odd = {}
+
 
     def reset(self) -> None:
         """Public reset, if you ever replay a game with the same agent."""

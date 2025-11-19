@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from collections import deque
 from typing import List, Tuple
 import math
 
@@ -13,22 +14,20 @@ INF = 10**9
 
 class PlayerAgent:
     def __init__(self, board: board.Board, time_left: Callable):
+        #board & trapdoor details
         self.map_size = board.game_map.MAP_SIZE
         self.trap_belief = TrapdoorBelief(self.map_size)
         self.known_traps: set[Tuple[int, int]] = set()
+        
         #anti repetition
         self.prev_pos: Tuple[int, int] | None = None
-        self.prev_opp_eggs: int = 0
 
-        # You can tune these:
-        self.max_depth = 9     # typical; drop to 2 if time is low
+        # Hyperparameters:
+        self.max_depth = 10     # typical; drop to 2 if time is low
         self.trap_hard = 0.95   # hard “lava” threshold
         self.trap_weight = 50 # soft risk penalty scale
         self.look_radius = 3 #for heauristic evalutions
 
-    # ------------------------------------------------------------
-    # Entry point
-    # ------------------------------------------------------------
     def play(
         self,
         board: board.Board,
@@ -36,11 +35,7 @@ class PlayerAgent:
         time_left: Callable,
     ):
         # 1) Collapse beliefs on any trapdoors the engine has discovered
-        # Assuming board.found_trapdoors is a set of (x, y) tuples
-        found = getattr(board, "found_trapdoors", set())
-        # Just in case it's some other iterable:
-        found = set(found)
-
+        found = board.found_trapdoors 
         new_traps = found - self.known_traps
         for pos in new_traps:
             self.trap_belief.set_trapdoor(pos)
@@ -48,12 +43,13 @@ class PlayerAgent:
 
         # 2) Normal HMM update with current senses
         my_pos = board.chicken_player.get_location()
-        opp_eggs = board.eggs_enemy
 
         self.trap_belief.update(my_pos, sensor_data)
 
-        depth = self.choose_depth(time_left)
+        #Alpha-Beta Search for best move
+        #TODO: Expected Value- add in a hard prediction mechanism?
 
+        depth = self.choose_depth(board.player_time, board.turn_count)
         moves = board.get_valid_moves()
         if not moves:
             return (Direction.STAY, MoveType.MOVE)
@@ -76,12 +72,16 @@ class PlayerAgent:
             if beta <= alpha:
                 break
         self.prev_pos = my_pos
-        self.prev_opp_eggs = opp_eggs
         return best_move
     
-    def choose_depth(self, time_left):
+    def choose_depth(self, time_left, turn):
         """Choose search depth based on remaining time."""
-        t = time_left()
+        t = time_left
+        #TODO: In the opening stage, don't waste too much time
+        #TODO: Variable Depth, depending on how complex the position is
+
+        if turn < 4:
+            return 5
 
         # Emergency mode: barely any time left
         if t < 0.4:
@@ -90,12 +90,14 @@ class PlayerAgent:
         # Medium time: slightly reduced search
         if t < 1.5:
             return 2
-        
-        if t < 30:
+        if t < 10:
             return 4
-
-        if t < 300:
+        if t < 30:
+            return 6
+        if t < 100:
             return 8
+        if t < 200:
+            return 9
         
         # Normal mode (full depth)
         return self.max_depth
@@ -118,8 +120,10 @@ class PlayerAgent:
             return self.evaluate(board)
 
         moves = board.get_valid_moves()
-        if not moves:
-            return self.evaluate(board)
+        if not moves: #no moves left
+            # 'maximizing' == True  → it's our move → we lose
+            # 'maximizing' == False → it's opponent's move → they lose → we win
+            return -INF if maximizing else INF
 
         moves = self.order_moves(board, moves)
 
@@ -169,66 +173,138 @@ class PlayerAgent:
     def manhattan(self, a, b) -> int:
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-    def evaluate(self, board: board.Board) -> float:
-        my_pos = board.chicken_player.get_location()
-        opp_pos = board.chicken_enemy.get_location()
+    def evaluate(self, cur_board: board.Board) -> float:
+        my_pos = cur_board.chicken_player.get_location()
+        opp_pos = cur_board.chicken_enemy.get_location()  # currently unused, but keep if you want later
 
-        my_eggs = board.eggs_player
-        opp_eggs = board.eggs_enemy
-        my_turds = board.turds_player
-        opp_turds = board.turds_enemy
+        my_eggs = cur_board.eggs_player
+        opp_eggs = cur_board.eggs_enemy
+        my_turds = cur_board.turds_player
+        opp_turds = cur_board.turds_enemy
 
         base_me = len(my_eggs)
         base_opp = len(opp_eggs)
 
-        moves_left = board.MAX_TURNS - board.turn_count
+        moves_left = cur_board.MAX_TURNS - cur_board.turn_count
+        dim = cur_board.game_map.MAP_SIZE
 
-        # Collect unclaimed squares
-        unclaimed = []
-        dim = board.game_map.MAP_SIZE
-        occupied = my_eggs | opp_eggs | my_turds | opp_turds
-        for x in range(dim):
-            for y in range(dim):
-                if (x, y) not in occupied:
-                    unclaimed.append((x, y))
-
-        exp_me = base_me
-        exp_opp = base_opp
-
-        for s in unclaimed:
-            d_me = self.manhattan(my_pos, s)
-            d_opp = self.manhattan(opp_pos, s)
-
-            if d_me > moves_left and d_opp > moves_left:
-                continue
-
-            w_me = w_opp = 0.0
-            if d_me <= moves_left and d_opp > moves_left:
-                w_me = 1.0
-            elif d_opp <= moves_left and d_me > moves_left:
-                w_opp = 1.0
-            else:
-                if d_me < d_opp:
-                    w_me = 1.0
-                elif d_opp < d_me:
-                    w_opp = 1.0
-                else:
-                    w_me = w_opp = 0.5
-
-            # Trap risk discount on this egg
-            trap_p = self.trap_belief.prob_at(s)
-            safe_factor = 1.0 - trap_p  # brutal: if high trap prob, value ~ 0
-            exp_me += w_me * safe_factor
-            exp_opp += w_opp  # opponent “doesn’t know”, but fine as heuristic
-
-        # Hard penalty for standing on / moving into likely trap
+        # If no moves left, just return material + trap penalty at current location.
         trap_here = self.trap_belief.prob_at(my_pos)
-        if trap_here > self.trap_hard:
-            return -INF / 2
+        trap_penalty_here = 5.0 * trap_here
+        if moves_left <= 0:
+            return (base_me - base_opp) - trap_penalty_here
 
-        trap_penalty = self.trap_weight * (trap_here / (1.0 - trap_here + 1e-9))
+        # --- d = sqrt(moves_left), clamped to [1, dim] ---
+        d = int(moves_left ** 0.5)
+        if d < 1:
+            d = 1
+        if d > dim:
+            d = dim
 
-        return (exp_me - exp_opp) - trap_penalty
+        occupied = my_eggs | opp_eggs | my_turds | opp_turds
+
+        mx, my = my_pos
+
+        # Candidate windows: treat our position as each corner of the dxd square,
+        # then clamp to board. Deduplicate resulting (x0, y0).
+        candidate_windows = set()
+        corner_offsets = [
+            (0, 0),          # our pos at top-left of window
+            (d - 1, 0),      # our pos at top-right
+            (0, d - 1),      # bottom-left
+            (d - 1, d - 1),  # bottom-right
+        ]
+
+        for offx, offy in corner_offsets:
+            x0 = mx - offx
+            y0 = my - offy
+            # clamp so window stays on board
+            if x0 < 0:
+                x0 = 0
+            if y0 < 0:
+                y0 = 0
+            if x0 > dim - d:
+                x0 = dim - d
+            if y0 > dim - d:
+                y0 = dim - d
+            candidate_windows.add((x0, y0))
+
+        # Opponent future placement penalty:
+        region_area = d * d
+        opp_future_factor = (moves_left / 4.0) * (region_area / float(dim * dim))
+
+        best_region_score = float("-inf")
+
+        for x0, y0 in candidate_windows:
+            unclaimed = 0
+            opp_eggs_count = 0
+            opp_turds_count = 0
+            trap_prob_sum = 0.0
+
+            for x in range(x0, x0 + d):
+                for y in range(y0, y0 + d):
+                    s = (x, y)
+
+                    # "Unclaimed eggs": squares not occupied by any egg or turd
+                    if s not in occupied:
+                        unclaimed += 1
+
+                    if s in opp_eggs:
+                        opp_eggs_count += 1
+                    if s in opp_turds:
+                        opp_turds_count += 1
+
+                    trap_prob_sum += self.trap_belief.prob_at(s)
+
+            # Your heuristic:
+            # score_region = (#unclaimed)
+            #                - 0.5 * (#opp eggs)
+            #                - 1.0 * (#opp turds)
+            #                - 5.0 * (sum trap probabilities in region)
+            #                - opp_future_factor (optional)
+            score_region = (
+                float(unclaimed)
+                - 0.5 * opp_eggs_count
+                - 1.0 * opp_turds_count
+                - 5.0 * trap_prob_sum
+                - opp_future_factor
+            )
+
+            if score_region > best_region_score:
+                best_region_score = score_region
+
+        # If something went very wrong and we never set best_region_score, fall back.
+        if best_region_score == float("-inf"):
+            future_gain = 0.0
+        else:
+            future_gain = best_region_score
+
+        # Combine: real eggs + discounted expected future eggs - trap risk where we stand.
+        base_diff = base_me - base_opp
+        score = base_diff + 0.6 * (future_gain - trap_penalty_here - opp_future_factor)
+
+        return score
+
+
+    def order_moves(self, board: board.Board, moves):
+        # 1. If any egg moves exist, drop everything else
+        #TODO: It might be better to include some turd moves
+        egg_moves = [mv for mv in moves if mv[1] == MoveType.EGG]
+        if egg_moves:
+            moves = egg_moves
+
+        scored = []
+        for mv in moves:
+            # super cheap features only
+            pri = self.move_priority(mv)
+            dir_score = self.direction_score(board, mv)  # MUST be cheap (int ops)
+            scored.append((pri, dir_score, mv))
+
+        # sort by (pri, dir_score)
+        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+
+        return [t[2] for t in scored]
+
 
     def move_priority(self, mv) -> int:
         direction, movetype = mv
@@ -239,6 +315,8 @@ class PlayerAgent:
         return 0
 
     def direction_score(self, cur_board: board.Board, mv) -> float:
+        #heuristic for figuring out which direction is most likely optimal
+        #penalize just going back
         direction, _ = mv
         my_pos = cur_board.chicken_player.get_location()
         opp_pos = cur_board.chicken_enemy.get_location()
@@ -275,13 +353,69 @@ class PlayerAgent:
         return score
 
 
+    #too slow to actually use for evalution
+    def bfs_distances(self, cur_board: board.Board, start: tuple[int, int], for_me: bool) -> dict[tuple[int, int], int]:
+        """
+        BFS over the board respecting movement constraints.
 
-    def order_moves(self, board: board.Board, moves):
-        scored = []
-        for mv in moves:
-            pri = self.move_priority(mv)
-            dir_score = self.direction_score(board, mv)
-            scored.append(((pri, dir_score), mv))
+        for_me = True  -> distances for our chicken
+        for_me = False -> distances for opponent chicken
+        """
+        dim = cur_board.game_map.MAP_SIZE
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [mv for _, mv in scored]
+        eggs_p = cur_board.eggs_player
+        eggs_e = cur_board.eggs_enemy
+        turds_p = cur_board.turds_player
+        turds_e = cur_board.turds_enemy
+
+        # Squares you simply cannot step on (anyone)
+        blocked = eggs_p | eggs_e | turds_p | turds_e
+
+        # Squares forbidden because they share an edge with *opponent* turds
+        # For us -> forbidden around opponent's turds
+        # For opponent -> forbidden around our turds
+        if for_me:
+            opp_turds = turds_e
+        else:
+            opp_turds = turds_p
+
+        forbidden_adjacent: set[tuple[int, int]] = set()
+        for (tx, ty) in opp_turds:
+            for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+                nx, ny = tx + dx, ty + dy
+                if 0 <= nx < dim and 0 <= ny < dim:
+                    forbidden_adjacent.add((nx, ny))
+
+        # We also never step on the trapdoor squares themselves once known,
+        # but that's already encoded via board.turds if they place turds there.
+        # If you want, you can additionally block squares in board.found_trapdoors.
+
+        dist: dict[tuple[int, int], int] = {}
+        q = deque()
+
+        if start in blocked or start in forbidden_adjacent:
+            return dist  # we are in a horrible position; everything is unreachable
+
+        dist[start] = 0
+        q.append(start)
+
+        while q:
+            x, y = q.popleft()
+            d = dist[(x, y)]
+
+            for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+                nx, ny = x + dx, y + dy
+                if not (0 <= nx < dim and 0 <= ny < dim):
+                    continue
+                pos = (nx, ny)
+                if pos in dist:
+                    continue
+                if pos in blocked:
+                    continue
+                if pos in forbidden_adjacent:
+                    continue
+
+                dist[pos] = d + 1
+                q.append(pos)
+
+        return dist
