@@ -24,7 +24,7 @@ class PlayerAgent:
         self.visited = [[False for _ in range(8)] for _ in range(8)]
 
         # Hyperparameters:
-        self.max_depth = 10     # typical; drop to 2 if time is low
+        self.max_depth = 12     # typical; drop to 2 if time is low
         self.trap_hard = 0.95   # hard “lava” threshold
         self.trap_weight = 50 # soft risk penalty scale
         self.look_radius = 3 #for heauristic evalutions
@@ -61,13 +61,14 @@ class PlayerAgent:
         best_move = None
         best_val = -INF
 
-        ordered = self.order_moves(board, moves)
+        ordered = self.order_moves(board, moves, blocked_dir=None)
 
         alpha, beta = -INF, INF
         for mv in ordered:
             child = self.simulate_move(board, mv)
+            child_blocked = self.opposite(mv[0])
             val = self.alphabeta(
-                child, depth - 1, alpha, beta, maximizing=False, time_left=time_left
+                child, depth - 1, alpha, beta, maximizing=False, time_left=time_left, blocked_dir=child_blocked
             )
             if val > best_val:
                 best_val = val
@@ -107,15 +108,7 @@ class PlayerAgent:
         return self.max_depth
 
 
-    def alphabeta(
-        self,
-        board: board.Board,
-        depth: int,
-        alpha: float,
-        beta: float,
-        maximizing: bool,
-        time_left: Callable,
-    ) -> float:
+    def alphabeta(self, board, depth, alpha, beta, maximizing, time_left, blocked_dir):
         # Fail-safe: if we’re almost out of time, cut search
         if time_left() < 0.05:
             return self.evaluate(board)
@@ -129,15 +122,17 @@ class PlayerAgent:
             # 'maximizing' == False → it's opponent's move → they lose → we win
             return -INF if maximizing else INF
 
-        moves = self.order_moves(board, moves)
+        moves = self.order_moves(board, moves, blocked_dir)
 
         if maximizing:
             value = -INF
             for mv in moves:
                 child = self.simulate_move(board, mv)
+                child_blocked = self.opposite(mv[0])
+
                 value = max(
                     value,
-                    self.alphabeta(child, depth - 1, alpha, beta, False, time_left),
+                    self.alphabeta(child, depth - 1, alpha, beta, False, time_left, blocked_dir=child_blocked),
                 )
                 alpha = max(alpha, value)
                 if beta <= alpha:
@@ -147,9 +142,10 @@ class PlayerAgent:
             value = INF
             for mv in moves:
                 child = self.simulate_move(board, mv)
+                child_blocked = self.opposite(mv[0])
                 value = min(
                     value,
-                    self.alphabeta(child, depth - 1, alpha, beta, True, time_left),
+                    self.alphabeta(child, depth - 1, alpha, beta, True, time_left, blocked_dir=child_blocked),
                 )
                 beta = min(beta, value)
                 if beta <= alpha:
@@ -176,6 +172,15 @@ class PlayerAgent:
 
     def manhattan(self, a, b) -> int:
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
+    
+    def opposite(self, d: Direction) -> Direction:
+        match d:
+            case Direction.UP: return Direction.DOWN
+            case Direction.DOWN: return Direction.UP
+            case Direction.LEFT: return Direction.RIGHT
+            case Direction.RIGHT: return Direction.LEFT
+            case _: return d
+
 
     #TODO: Consider adding "momentum" metric, where if you pick a direction you keep going at it
     def evaluate(self, cur_board: board.Board) -> float:
@@ -296,11 +301,21 @@ class PlayerAgent:
         return score
 
 
-    def order_moves(self, board: board.Board, moves):
+    def order_moves(self, board: board.Board, moves, blocked_dir=None):
+        #TODO: Remove moves that just go back to the previous node
         # 1. If any egg moves exist, drop all other moves
         egg_moves = [mv for mv in moves if mv[1] == MoveType.EGG]
         if egg_moves:
             moves = egg_moves
+
+        #prevent repetition
+        if blocked_dir is not None:
+            non_backtracking = []
+            for direction, movetype in moves:
+                if direction is not blocked_dir:
+                    non_backtracking.append((direction, movetype))
+            if non_backtracking:
+                moves = non_backtracking
 
         # 2. Remove moves that step onto trapdoors we already know about
         cur_loc = board.chicken_player.get_location()
@@ -311,7 +326,6 @@ class PlayerAgent:
             # Check against YOUR OWN trapdoor memory
             if next_loc not in self.known_traps:
                 safe_moves.append((direction, movetype))
-
         # Only replace moves if we didn't eliminate everything
         if safe_moves:
             moves = safe_moves
