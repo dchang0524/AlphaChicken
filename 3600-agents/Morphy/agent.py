@@ -24,7 +24,7 @@ class PlayerAgent:
         self.visited = [[False for _ in range(8)] for _ in range(8)]
 
         # Hyperparameters:
-        self.max_depth = 12     # typical; drop to 2 if time is low
+        self.max_depth = 11     # typical; drop to 2 if time is low
         self.trap_hard = 0.95   # hard “lava” threshold
         self.trap_weight = 50 # soft risk penalty scale
         self.look_radius = 3 #for heauristic evalutions
@@ -293,22 +293,76 @@ class PlayerAgent:
             future_gain = 0.0
         else:
             future_gain = best_region_score
-
+        center_bonus = self.space_advantage(my_eggs, my_turds)
         # Combine: real eggs + discounted expected future eggs - trap risk where we stand.
         base_diff = base_me - base_opp
-        score = base_diff + 0.5 * (future_gain - trap_penalty_here - opp_future_factor) - trap_penalty_here 
+        score = base_diff + 0.5 * (future_gain - trap_penalty_here - opp_future_factor) - trap_penalty_here + center_bonus
 
         return score
+    
+    def space_advantage(self, my_eggs, my_turds) -> float:
+        """
+        Rewards for board control:
+        - Real center 2×2: eggs +1.0, turds +0.8
+        - Center 4×4: eggs +0.5, turds +0.5
+        - Corner squares 1×1: eggs +2.0
+        """
+
+        # Real center (2×2)
+        real_center = {(3,3), (3,4), (4,3), (4,4)}
+
+        # Center (4×4)
+        center_rows = {2,3,4,5}
+        center_cols = {2,3,4,5}
+
+        # Corners (8×8 board)
+        corners = {(0,0), (0,7), (7,0), (7,7)}
+
+        bonus = 0.0
+
+        # Eggs
+        for (x, y) in my_eggs:
+            if (x, y) in corners:
+                bonus += 2.0
+            elif (x, y) in real_center:
+                bonus += 1.0
+            elif x in center_rows and y in center_cols:
+                bonus += 0.5
+
+        # Turds
+        for (x, y) in my_turds:
+            if (x, y) in real_center:
+                bonus += 0.8
+            elif x in center_rows and y in center_cols:
+                bonus += 0.5
+
+        return bonus
+
 
 
     def order_moves(self, board: board.Board, moves, blocked_dir=None):
-        #TODO: Remove moves that just go back to the previous node
-        # 1. If any egg moves exist, drop all other moves
-        egg_moves = [mv for mv in moves if mv[1] == MoveType.EGG]
-        if egg_moves:
-            moves = egg_moves
+        cur_loc = board.chicken_player.get_location()
+        dim = board.game_map.MAP_SIZE
+        x, y = cur_loc
 
-        #prevent repetition
+        # --- geometric classification -----------------------------------------
+        # Corner region: outer 2 rows or outer 2 columns
+        is_corner = (x < 2 or x >= dim - 2) or (y < 2 or y >= dim - 2)
+
+        # Center region: inner 4x4 (rows 2..5, cols 2..5)
+        is_center = (2 <= x <= 5) and (2 <= y <= 5)
+
+        # ---------------------------------------------------------------------
+
+        # 1. Egg filtering
+        egg_moves = [mv for mv in moves if mv[1] == MoveType.EGG]
+
+        if egg_moves and not is_center:
+            # In non-center regions: only egg moves are kept
+            moves = egg_moves
+        # In center: keep all moves; eggs still sort first later
+
+        # 1.5 Prevent immediate backtracking
         if blocked_dir is not None:
             non_backtracking = []
             for direction, movetype in moves:
@@ -317,30 +371,36 @@ class PlayerAgent:
             if non_backtracking:
                 moves = non_backtracking
 
-        # 2. Remove moves that step onto trapdoors we already know about
-        cur_loc = board.chicken_player.get_location()
+        # 2. Remove moves stepping on known trapdoors
         safe_moves = []
         for direction, movetype in moves:
             next_loc = loc_after_direction(cur_loc, direction)
-
-            # Check against YOUR OWN trapdoor memory
             if next_loc not in self.known_traps:
                 safe_moves.append((direction, movetype))
-        # Only replace moves if we didn't eliminate everything
         if safe_moves:
             moves = safe_moves
 
         # 3. Score moves cheaply
         scored = []
         for mv in moves:
+            direction, movetype = mv
+
+            # priority: EGG > TURD > MOVE (default)
             pri = self.move_priority(mv)
-            dir_score = self.direction_score(board, mv)  # MUST be cheap
+
+            # Corner rule: penalize turds relative to MOVE
+            if is_corner and movetype == MoveType.TURD:
+                pri = -1     # lower than MOVE = 0
+
+            dir_score = self.direction_score(board, mv)
+
             scored.append((pri, dir_score, mv))
 
-        # 4. Sort by priority + direction score
+        # 4. Sort by (priority, direction_score)
         scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
 
         return [t[2] for t in scored]
+
 
 
     def move_priority(self, mv) -> int:
@@ -352,13 +412,21 @@ class PlayerAgent:
         return 0
 
     def direction_score(self, cur_board: board.Board, mv) -> float:
-        #heuristic for figuring out which direction is most likely optimal
-        #penalize just going back
-        direction, _ = mv
-        my_pos = cur_board.chicken_player.get_location()
-        opp_pos = cur_board.chicken_enemy.get_location()
+        """
+        Directional heuristic: for the chosen direction, look at the
+        half-board region in that direction from our current position.
 
-        new_pos = loc_after_direction(my_pos, direction)
+        Score(region) =
+            (# of unlaid squares)
+        - 0.5 * (# of opponent eggs)
+        - 1.0 * (# of opponent turds)
+        - 10.0 * (sum of trapdoor probabilities in region)
+        """
+        direction, _ = mv
+        dim = cur_board.game_map.MAP_SIZE
+
+        my_pos = cur_board.chicken_player.get_location()
+        mx, my = my_pos
 
         eggs_player = cur_board.eggs_player
         eggs_enemy = cur_board.eggs_enemy
@@ -366,28 +434,54 @@ class PlayerAgent:
         turds_enemy = cur_board.turds_enemy
         occupied = eggs_player | eggs_enemy | turds_player | turds_enemy
 
-        dim = cur_board.game_map.MAP_SIZE
-        score = 0.0
+        # Define the region for this direction
+        def in_region(x: int, y: int) -> bool:
+            if direction == Direction.UP:
+                # your example: at (3,4), UP → y > 4
+                return y > my
+            elif direction == Direction.DOWN:
+                return y < my
+            elif direction == Direction.RIGHT:
+                return x > mx
+            elif direction == Direction.LEFT:
+                return x < mx
+            else:
+                # STAY or any other direction: no clear "front" region,
+                # just don't bias it (or treat the whole board as region).
+                return True
 
-        # Strong penalty for just moving back to where we were
-        if self.prev_pos is not None and new_pos == self.prev_pos:
-            score -= 5.0  # tune this; big enough to avoid unless truly necessary
+        unlaid = 0
+        opp_eggs_count = 0
+        opp_turds_count = 0
+        trap_prob_sum = 0.0
 
         for x in range(dim):
             for y in range(dim):
+                if not in_region(x, y):
+                    continue
+
                 pos = (x, y)
-                if pos in occupied:
-                    continue
 
-                if self.manhattan(new_pos, pos) > self.look_radius:
-                    continue
+                # unlaid = not occupied by any egg or turd
+                if pos not in occupied:
+                    unlaid += 1
 
-                d_me = self.manhattan(new_pos, pos)
-                d_opp = self.manhattan(opp_pos, pos)
-                if d_me < d_opp:
-                    score += 1.0
+                if pos in eggs_enemy:
+                    opp_eggs_count += 1
+                if pos in turds_enemy:
+                    opp_turds_count += 1
+
+                trap_prob_sum += self.trap_belief.prob_at(pos)
+
+        score = (
+            float(unlaid)
+            - 0.5 * opp_eggs_count
+            - 1.0 * opp_turds_count
+            - 10.0 * trap_prob_sum
+        )
 
         return score
+
 
 
     #too slow to actually use for evalution
