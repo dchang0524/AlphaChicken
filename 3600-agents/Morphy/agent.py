@@ -84,8 +84,8 @@ class PlayerAgent:
         #TODO: In the opening stage, don't waste too much time
         #TODO: Variable Depth, depending on how complex the position is
 
-        if turn < 4:
-            return 5
+        #if turn < 4:
+            #return 5
 
         # Emergency mode: barely any time left
         if t < 0.4:
@@ -97,11 +97,11 @@ class PlayerAgent:
         if t < 10:
             return 4
         if t < 30:
-            return 6
-        if t < 100:
-            return 8
-        if t < 200:
-            return 9
+            return self.max_depth - 3
+        if t < 90:
+            return self.max_depth - 2
+        if t < 180:
+            return self.max_depth - 1
         
         # Normal mode (full depth)
         return self.max_depth
@@ -297,20 +297,33 @@ class PlayerAgent:
 
 
     def order_moves(self, board: board.Board, moves):
-        # 1. If any egg moves exist, drop everything else
-        #TODO: It might be better to include some turd moves
+        # 1. If any egg moves exist, drop all other moves
         egg_moves = [mv for mv in moves if mv[1] == MoveType.EGG]
         if egg_moves:
             moves = egg_moves
 
+        # 2. Remove moves that step onto trapdoors we already know about
+        cur_loc = board.chicken_player.get_location()
+        safe_moves = []
+        for direction, movetype in moves:
+            next_loc = loc_after_direction(cur_loc, direction)
+
+            # Check against YOUR OWN trapdoor memory
+            if next_loc not in self.known_traps:
+                safe_moves.append((direction, movetype))
+
+        # Only replace moves if we didn't eliminate everything
+        if safe_moves:
+            moves = safe_moves
+
+        # 3. Score moves cheaply
         scored = []
         for mv in moves:
-            # super cheap features only
             pri = self.move_priority(mv)
-            dir_score = self.direction_score(board, mv)  # MUST be cheap (int ops)
+            dir_score = self.direction_score(board, mv)  # MUST be cheap
             scored.append((pri, dir_score, mv))
 
-        # sort by (pri, dir_score)
+        # 4. Sort by priority + direction score
         scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
 
         return [t[2] for t in scored]
