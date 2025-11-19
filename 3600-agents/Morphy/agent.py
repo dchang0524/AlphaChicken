@@ -195,121 +195,79 @@ class PlayerAgent:
 
     #TODO: Consider adding "momentum" metric, where if you pick a direction you keep going at it
     def evaluate(self, cur_board: board.Board) -> float:
-        my_pos = cur_board.chicken_player.get_location()
-        opp_pos = cur_board.chicken_enemy.get_location()  # currently unused, but keep if you want later
+        """
+        Evaluation using:
+        - Egg difference (current eggs on board)
+        - Voronoi-style egg space control (space_control)
+        - Local trapdoor risk
+        - Center-breakthrough bonus with time decay
+        """
 
-        my_eggs = cur_board.eggs_player
+        my_eggs  = cur_board.eggs_player
         opp_eggs = cur_board.eggs_enemy
-        my_turds = cur_board.turds_player
-        opp_turds = cur_board.turds_enemy
 
-        base_me = len(my_eggs)
-        base_opp = len(opp_eggs)
+        base_me   = len(my_eggs)
+        base_opp  = len(opp_eggs)
+        base_diff = base_me - base_opp
 
-        moves_left = cur_board.MAX_TURNS - cur_board.turn_count
-        dim = cur_board.game_map.MAP_SIZE
+        # Voronoi egg-space control
+        my_space, opp_space = self.space_control(cur_board)
+        space_gap = my_space - opp_space
 
-        # If no moves left, just return material + trap penalty at current location.
+        # Local trap risk
+        my_pos = cur_board.chicken_player.get_location()
         trap_here = self.trap_belief.prob_at(my_pos)
-        trap_penalty_here = 10.0 * trap_here
-        if moves_left <= 0:
-            return (base_me - base_opp) - trap_penalty_here
+        TRAP_LOCAL_COST = 10.0
+        trap_penalty = TRAP_LOCAL_COST * trap_here
 
-        # --- d = sqrt(moves_left), clamped to [1, dim] ---
-        d = int(moves_left ** 0.5)
-        if d < 1:
-            d = 1
-        if d > dim:
-            d = dim
+        # Time-decay factor: early turns get ~1, late turns ~0
+        max_turns = cur_board.MAX_TURNS
+        t = cur_board.turn_count
+        if max_turns > 0:
+            decay = max(0.0, (max_turns - t) / max_turns)
+        else:
+            decay = 0.0
 
-        occupied = my_eggs | opp_eggs | my_turds | opp_turds
+        # Center-breakthrough bonus:
+        # count our eggs/turds that lie past the frontier
+        center_adv_count = 0
+        for pos in my_eggs | cur_board.turds_player:
+            if self.is_forward_square(pos):
+                center_adv_count += 1
 
-        mx, my = my_pos
+        CENTER_WEIGHT = 3.0  # tuneable
+        center_bonus = CENTER_WEIGHT * center_adv_count * decay
 
-        # Candidate windows: treat our position as each corner of the dxd square,
-        # then clamp to board. Deduplicate resulting (x0, y0).
-        candidate_windows = set()
-        corner_offsets = [
-            (0, 0),          # our pos at top-left of window
-            (d - 1, 0),      # our pos at top-right
-            (0, d - 1),      # bottom-left
-            (d - 1, d - 1),  # bottom-right
-        ]
+        # Phase logic driven purely by opponent egg-space
+        FINISH_THRESHOLD = 10   # they control very few egg-eligible squares
+        CRUSH_THRESHOLD  = 26   # clearly cramped but not dead
 
-        for offx, offy in corner_offsets:
-            x0 = mx - offx
-            y0 = my - offy
-            # clamp so window stays on board
-            if x0 < 0:
-                x0 = 0
-            if y0 < 0:
-                y0 = 0
-            if x0 > dim - d:
-                x0 = dim - d
-            if y0 > dim - d:
-                y0 = dim - d
-            candidate_windows.add((x0, y0))
-
-        # Opponent future placement penalty:
-        region_area = d * d
-        opp_future_factor = (moves_left / 4.0) * (region_area / float(dim * dim))
-
-        best_region_score = float("-inf")
-
-        for x0, y0 in candidate_windows:
-            unclaimed = 0
-            opp_eggs_count = 0
-            opp_turds_count = 0
-            trap_prob_sum = 0.0
-            newly_visited = 0
-            for x in range(x0, x0 + d):
-                for y in range(y0, y0 + d):
-                    s = (x, y)
-
-                    # "Unclaimed eggs": squares not occupied by any egg or turd
-                    if s not in occupied:
-                        unclaimed += 1
-
-                    if s in opp_eggs:
-                        opp_eggs_count += 1
-                    if s in opp_turds:
-                        opp_turds_count += 1
-                    if not self.visited[x][y]:
-                        newly_visited += 1
-
-                    
-
-                    trap_prob_sum += self.trap_belief.prob_at(s)
-
-            # Your heuristic:
-            # score_region = (#unclaimed)
-            #                - 0.5 * (#opp eggs)
-            #                - 1.0 * (#opp turds)
-            #                - 5.0 * (sum trap probabilities in region)
-            #                - opp_future_factor (optional)
-            score_region = (
-                float(unclaimed)
-                + 0.5 * newly_visited
-                - 0.5 * opp_eggs_count
-                - 1.0 * opp_turds_count
-                - 5.0 * trap_prob_sum
-                - opp_future_factor
+        # a) Finish mode: low opp space -> convert
+        if opp_space <= FINISH_THRESHOLD:
+            return (
+                5.0 * base_diff
+                + 4.0 * space_gap
+                + 2.0 * center_bonus
+                - 1.0 * trap_penalty
             )
 
-            if score_region > best_region_score:
-                best_region_score = score_region
+        # b) Crush mode: medium opp space
+        if opp_space <= CRUSH_THRESHOLD:
+            return (
+                4.0 * space_gap
+                + 3.0 * base_diff
+                + 1.5 * center_bonus
+                - 1.0 * trap_penalty
+            )
 
-        # If something went very wrong and we never set best_region_score, fall back.
-        if best_region_score == float("-inf"):
-            future_gain = 0.0
-        else:
-            future_gain = best_region_score
-        center_bonus = self.space_advantage(my_eggs, my_turds, cur_board.turn_count)
-        # Combine: real eggs + discounted expected future eggs - trap risk where we stand.
-        base_diff = base_me - base_opp
-        score = base_diff + 0.5 * (future_gain - trap_penalty_here - opp_future_factor) - 1.3*trap_penalty_here + center_bonus
+        # c) Full Tal mode: they still have a lot of egg-space
+        return (
+            6.0 * space_gap        # dominate future egg territory
+            + 1.0 * base_diff      # eggs secondary
+            + 2.0 * center_bonus   # strong incentive to break through early
+            - 1.2 * trap_penalty
+        )
 
-        return score
     
     def space_advantage(self, my_eggs, my_turds, turn: int) -> float:
         """
@@ -355,6 +313,31 @@ class PlayerAgent:
                 bonus += center_mult * 1
 
         return bonus
+    
+    def is_forward_square(self, pos: tuple[int, int]) -> bool:
+        """
+        Returns True if `pos` is on the 'far side' of the frontier
+        relative to our spawn position.
+
+        Frontier is defined by x=3/4 and y=3/4 splits on an 8×8 board.
+        """
+        sx, sy = self.spawn_pos
+        x, y = pos
+
+        # top-left spawn: [0..3]x[0..3]
+        if sx <= 3 and sy <= 3:
+            return (x >= 4) or (y >= 4)
+
+        # top-right spawn: [0..3]x[4..7]
+        if sx <= 3 and sy >= 4:
+            return (x >= 4) or (y <= 3)
+
+        # bottom-left spawn: [4..7]x[0..3]
+        if sx >= 4 and sy <= 3:
+            return (x <= 3) or (y >= 4)
+
+        # bottom-right spawn: [4..7]x[4..7]
+        return (x <= 3) or (y <= 3)
 
 
 

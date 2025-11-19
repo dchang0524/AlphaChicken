@@ -25,7 +25,8 @@ class PlayerAgent:
 
         # Hyperparameters:
         self.max_depth = 10     # typical; drop to 2 if time is low
-        self.trap_hard = 0.95   # hard “lava” threshold
+        self.trap_hard = 0.70   # hard “lava” threshold
+        self.trap_block = 20 # number of turns you should completely avoid trapdoors
         self.trap_weight = 50 # soft risk penalty scale
         self.look_radius = 3 #for heauristic evalutions
 
@@ -195,91 +196,147 @@ class PlayerAgent:
 
     def evaluate(self, cur_board: board.Board) -> float:
         """
-        Tal-style evaluation:
+        Tal-style evaluation using only:
+        - trapdoor risk at our current square
+        - Voronoi-style egg space control (space_control)
+        - current egg difference
 
-        - PRIMARY: minimize opponent's future egg-path mobility.
-        - SECONDARY: center/space control.
-        - TERTIARY: raw egg difference.
-        - Trap risk is penalized.
-
-        Uses three regimes based on opponent mobility:
-        - High mobility     -> pure strangulation focus.
-        - Medium mobility   -> strangulation + start cashing egg lead.
-        - Very low mobility -> switch to greedy, convert position to egg lead.
+        Assumes terminal positions (no legal moves) are already handled
+        in alphabeta() by returning +/-INF and *not* calling evaluate().
         """
 
-        my_pos  = cur_board.chicken_player.get_location()
-        my_eggs = cur_board.eggs_player
+        # 1. Basic material (eggs)
+        my_eggs  = cur_board.eggs_player
         opp_eggs = cur_board.eggs_enemy
-        my_turds = cur_board.turds_player
 
-        base_me  = len(my_eggs)
-        base_opp = len(opp_eggs)
+        base_me   = len(my_eggs)
+        base_opp  = len(opp_eggs)
         base_diff = base_me - base_opp
 
-        moves_left = cur_board.MAX_TURNS - cur_board.turn_count
+        # 2. Space control over *egg-eligible* squares
+        my_space, opp_space = self.space_control(cur_board)
+        space_gap = my_space - opp_space    # positive if we dominate future egg squares
 
-        # Trap penalty at our current square
+        # 3. Local trapdoor risk at our current location
+        my_pos = cur_board.chicken_player.get_location()
         trap_here = self.trap_belief.prob_at(my_pos)
-        trap_penalty_here = 7.0 * trap_here
 
-        # If no moves left, just return material minus trap risk.
-        if moves_left <= 0:
-            return base_diff - trap_penalty_here
+        # Stepping on a trap is catastrophic: you lose space + they gain eggs.
+        TRAP_LOCAL_COST = 10.0
+        trap_penalty = TRAP_LOCAL_COST * trap_here
 
-        # Spatial center control you already defined
-        center_bonus = self.space_advantage(my_eggs, my_turds, cur_board.turn_count)
-        #center_bonus = 0
+        # 4. Phase weighting based purely on opponent egg-space
+        #    (how much territory they still control for future eggs)
+        FINISH_THRESHOLD = 10   # they control very few egg-eligible squares
+        CRUSH_THRESHOLD  = 26   # they are clearly cramped but not dead
 
-        # Opponent egg-path mobility (our primary "Tal pressure" metric)
-        opp_mob = self.opp_egg_path_mobility(cur_board)
-
-        # Regime thresholds; tuneable but these are reasonable starting points
-        FINISH_THRESHOLD = 8.0   # they basically can't realize more eggs
-        CRUSH_THRESHOLD  = 20.0  # they're cramped but not fully dead
-
-        # 1) Endgame / conversion mode:
-        # Opponent has almost no egg-paths left. Stop playing Tal, just cash in.
-        if opp_mob <= FINISH_THRESHOLD:
+        # a) Finish mode: opponent egg-space tiny -> convert space into eggs
+        if opp_space <= FINISH_THRESHOLD:
             return (
-                100.0 * base_diff      # heavily convert egg lead
-                + 3.0 * center_bonus
-                - 100 * trap_penalty_here
+                5.0 * base_diff      # cash in egg lead hard
+                + 4.0 * space_gap    # keep them suffocated
+                - 1.0 * trap_penalty
             )
 
-        # 2) Crush mode:
-        # They are significantly constrained, but still have some play.
-        if opp_mob <= CRUSH_THRESHOLD:
+        # b) Crush mode: they still have some region, but less than us
+        if opp_space <= CRUSH_THRESHOLD:
             return (
-                -2.5 * opp_mob       # keep strangling their remaining paths
-                + 3.0 * base_diff    # but egg lead starts to matter more
-                + 3.0 * center_bonus
-                - 7 * trap_penalty_here
+                4.0 * space_gap
+                + 3.0 * base_diff
+                - 1.0 * trap_penalty
             )
 
-        # 3) Full Tal mode:
-        # Opponent still has healthy mobility. Your job is to murder their graph.
-        score = (
-            -4.0 * opp_mob          # hard focus: kill their egg mobility
-            + 3.0 * center_bonus
-            + 0.5 * base_diff       # eggs matter a bit, but not main thing yet
-            - 7 * trap_penalty_here
+        # c) Full Tal mode: opponent still has decent egg-space.
+        #    Main job is to murder their region, eggs are secondary.
+        return (
+            6.0 * space_gap        # dominate reachable egg territory
+            + 1.0 * base_diff      # eggs start to matter, but not primary
+            - 1.2 * trap_penalty   # slightly harsher trap fear early
         )
-        return score
 
-
-    def opp_egg_path_mobility(self, cur_board: board.Board) -> float:
+    
+    def space_control(self, cur_board: board.Board) -> tuple[int, int]:
         """
-        Heuristic 'mobility' for the opponent:
-        Sum over all potential opponent egg squares of the (capped) number of
-        shortest paths from the opponent's current position.
+        Voronoi-style space control over *egg squares only*:
+        - my_space  = # of egg-eligible squares where my shortest-path distance < opponent's
+        - opp_space = # of egg-eligible squares where opponent's distance < mine
 
-        - Uses one BFS from opponent's location.
-        - Respects movement constraints (eggs, turds, adjacency to *our* turds, chicken).
-        - Treats found trapdoors as blocked (stepping on them is effectively losing).
-        - For each reachable, empty, parity-correct square, adds min(#paths, PATH_CAP).
+        "Egg-eligible" means:
+        - square is reachable (via bfs_distances constraints)
+        - square is currently empty (no egg/turd)
+        - parity matches that player's egg parity
         """
 
+        dim = cur_board.game_map.MAP_SIZE
+
+        my_pos  = cur_board.chicken_player.get_location()
+        opp_pos = cur_board.chicken_enemy.get_location()
+
+        eggs_p = cur_board.eggs_player
+        eggs_e = cur_board.eggs_enemy
+        turds_p = cur_board.turds_player
+        turds_e = cur_board.turds_enemy
+
+        occupied = eggs_p | eggs_e | turds_p | turds_e
+
+        # Determine parities:
+        # (0,0) even, (0,1) odd. Using engine legality to infer roles.
+        my_even  = cur_board.can_lay_egg_at_loc((0, 0))
+        opp_even = cur_board.can_lay_egg_at_loc((0, 1))
+
+        # Reuse your BFS distances with movement constraints
+        my_dist  = self.bfs_distances(cur_board, my_pos,  for_me=True)
+        opp_dist = self.bfs_distances(cur_board, opp_pos, for_me=False)
+
+        my_space = 0
+        opp_space = 0
+
+        for x in range(dim):
+            for y in range(dim):
+                pos = (x, y)
+
+                # Must be empty to be egg-eligible
+                if pos in occupied:
+                    continue
+
+                even = ((x + y) % 2 == 0)
+
+                d_me  = my_dist.get(pos)
+                d_opp = opp_dist.get(pos)
+
+                # If neither side can ever reach, ignore.
+                if d_me is None and d_opp is None:
+                    continue
+
+                # Only opponent can reach, and parity matches opponent
+                if d_me is None and d_opp is not None and even == opp_even:
+                    opp_space += 1
+                    continue
+
+                # Only we can reach, and parity matches us
+                if d_opp is None and d_me is not None and even == my_even:
+                    my_space += 1
+                    continue
+
+                # Both can reach: compare distances, but only count for the
+                # player whose parity matches this square.
+                if d_me is not None and d_opp is not None:
+                    if d_me < d_opp and even == my_even:
+                        my_space += 1
+                    elif d_opp < d_me and even == opp_even:
+                        opp_space += 1
+                    # ties or parity mismatch → no one gets this square
+
+        return my_space, opp_space
+
+
+    def bfs_distances(self, cur_board: board.Board, start: tuple[int, int], for_me: bool) -> dict[tuple[int, int], int]:
+        """
+        BFS over the board respecting movement constraints.
+
+        for_me = True  -> distances for our chicken
+        for_me = False -> distances for opponent chicken
+        """
         dim = cur_board.game_map.MAP_SIZE
 
         eggs_p = cur_board.eggs_player
@@ -287,402 +344,232 @@ class PlayerAgent:
         turds_p = cur_board.turds_player
         turds_e = cur_board.turds_enemy
 
-        my_chicken_pos  = cur_board.chicken_player.get_location()
-        opp_chicken_pos = cur_board.chicken_enemy.get_location()
+        # Squares you simply cannot step on (anyone)
+        blocked = eggs_p | eggs_e | turds_p | turds_e
 
-        # Squares no one can step on: any egg or turd, plus our chicken.
-        blocked: set[tuple[int, int]] = set()
-        blocked |= eggs_p
-        blocked |= eggs_e
-        blocked |= turds_p
-        blocked |= turds_e
-        blocked.add(my_chicken_pos)
+        # Squares forbidden because they share an edge with *opponent* turds
+        # For us -> forbidden around opponent's turds
+        # For opponent -> forbidden around our turds
+        if for_me:
+            opp_turds = turds_e
+        else:
+            opp_turds = turds_p
 
-        # Also treat discovered trapdoors as blocked: path through them is suicidal.
-        found_traps = getattr(cur_board, "found_trapdoors", set())
-        blocked |= set(found_traps)
-
-        # Squares forbidden for the opponent because they share an edge
-        # with *our* turds.
         forbidden_adjacent: set[tuple[int, int]] = set()
-        for (tx, ty) in turds_p:
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        for (tx, ty) in opp_turds:
+            for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
                 nx, ny = tx + dx, ty + dy
                 if 0 <= nx < dim and 0 <= ny < dim:
                     forbidden_adjacent.add((nx, ny))
 
-        start = opp_chicken_pos
-
-        # If the opponent is already in a terrible illegal/blocked spot, treat
-        # their future egg mobility as zero.
-        if start in blocked or start in forbidden_adjacent:
-            return 0.0
-
-        # Parity: (0,0) is even. Opponent parity inferred via (0,1).
-        # If we can lay at (0,0), we are even; then opponent is odd -> can_lay at (0,1).
-        # If we are odd, then we can't lay at (0,0), but we can at (0,1), so that still
-        # gives the opponent's parity correctly.
-        opp_even = cur_board.can_lay_egg_at_loc((0, 1))
-
-        from collections import deque
+        # We also never step on the trapdoor squares themselves once known,
+        # but that's already encoded via board.turds if they place turds there.
+        # If you want, you can additionally block squares in board.found_trapdoors.
 
         dist: dict[tuple[int, int], int] = {}
-        paths: dict[tuple[int, int], int] = {}
-
         q = deque()
-        dist[start] = 0
-        paths[start] = 1
-        q.append(start)
 
-        PATH_CAP = 3  # we don't need exact counts; just 0/1/2/3+ notion
+        if start in blocked or start in forbidden_adjacent:
+            return dist  # we are in a horrible position; everything is unreachable
+
+        dist[start] = 0
+        q.append(start)
 
         while q:
             x, y = q.popleft()
             d = dist[(x, y)]
 
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
                 nx, ny = x + dx, y + dy
                 if not (0 <= nx < dim and 0 <= ny < dim):
                     continue
                 pos = (nx, ny)
-
-                if pos in blocked or pos in forbidden_adjacent:
+                if pos in dist:
+                    continue
+                if pos in blocked:
+                    continue
+                if pos in forbidden_adjacent:
                     continue
 
-                if pos not in dist:
-                    dist[pos] = d + 1
-                    # First time discovered: inherit path count
-                    paths[pos] = min(paths[(x, y)], PATH_CAP)
-                    q.append(pos)
-                elif dist[pos] == d + 1:
-                    # Another shortest path found
-                    paths[pos] = min(paths[pos] + paths[(x, y)], PATH_CAP)
+                dist[pos] = d + 1
+                q.append(pos)
 
-        # Now sum over all reachable potential egg squares for the opponent.
-        total_mobility = 0.0
+        return dist
 
-        for pos, path_count in paths.items():
-            # Can't lay eggs on occupied or forbidden squares anyway.
-            if pos in blocked:
+
+    def order_moves(self, board: board.Board, moves, blocked_dir=None):
+        cur_loc = board.chicken_player.get_location()
+        dim = board.game_map.MAP_SIZE
+        x, y = cur_loc
+
+        opp_pos = board.chicken_enemy.get_location()
+        dist_to_opp = self.manhattan(cur_loc, opp_pos)
+
+        # --- geometric classification -----------------------------------------
+        is_corner = (x < 2 or x >= dim - 2) or (y < 2 or y >= dim - 2)
+        is_center = (2 <= x <= 5) and (2 <= y <= 5)
+
+        # "Hot zone" where offensive turds make sense:
+        turd_hot_zone = is_center or (dist_to_opp <= 3)
+
+        # Remaining turds (max 5)
+        my_turds = board.turds_player
+        remaining_turds = max(0, 5 - len(my_turds))
+
+        # Global space picture (egg-eligible Voronoi)
+        my_space, opp_space = self.space_control(board)
+
+        # Phase thresholds – match evaluate()
+        FINISH_THRESHOLD = 10   # they control very few egg-eligible squares
+        CRUSH_THRESHOLD  = 26   # clearly cramped but not dead
+
+        # ---------------------------------------------------------------------
+        # 1. Egg filtering (keep your original behavior)
+        egg_moves = [mv for mv in moves if mv[1] == MoveType.EGG]
+        if egg_moves and not is_center:
+            # In non-center regions: only egg moves are kept
+            moves = egg_moves
+        # In center: keep all moves; eggs still sort first later
+
+        # 1.5 Prevent immediate backtracking
+        if blocked_dir is not None:
+            non_backtracking: list[tuple[Direction, MoveType]] = []
+            for direction, movetype in moves:
+                if direction != blocked_dir:
+                    non_backtracking.append((direction, movetype))
+            if non_backtracking:
+                moves = non_backtracking
+
+        # 2. Remove moves stepping on known / high-prob trapdoors
+        filtered: list[tuple[Direction, MoveType]] = []
+        for direction, movetype in moves:
+            next_loc = loc_after_direction(cur_loc, direction)
+
+            # Never step on discovered trapdoors
+            if next_loc in self.known_traps:
                 continue
 
-            x, y = pos
-            even = ((x + y) % 2 == 0)
-
-            # Only count squares of correct parity for opponent egg placement.
-            if even != opp_even:
+            # Also avoid high-probability trap squares in the early/midgame
+            trap_p = self.trap_belief.prob_at(next_loc)
+            if trap_p >= self.trap_hard and board.turn_count <= self.trap_block:
                 continue
 
-            # This is a potential egg square: add capped path-count.
-            total_mobility += min(path_count, PATH_CAP)
+            filtered.append((direction, movetype))
 
-        return total_mobility
+        if filtered:
+            moves = filtered
+        if not moves:
+            return []  # fallback, alpha-beta will handle no-move cases
 
+        # 3. Score moves (phase-based Tal logic)
+        scored: list[tuple[float, float, tuple[Direction, MoveType]]] = []
+
+        # Weight of directional score by phase (less important in finish mode)
+        if opp_space > CRUSH_THRESHOLD:
+            dir_w = 1.0   # full Tal: directional space matters a lot
+        elif opp_space > FINISH_THRESHOLD:
+            dir_w = 0.7   # crush mode
+        else:
+            dir_w = 0.3   # finish mode: eggs > direction bias
+
+        # Helper: is there already a turd adjacent to a given location?
+        def has_adjacent_turd(pos: tuple[int, int]) -> bool:
+            px, py = pos
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nx, ny = px + dx, py + dy
+                if 0 <= nx < dim and 0 <= ny < dim and (nx, ny) in my_turds:
+                    return True
+            return False
+
+        for mv in moves:
+            direction, movetype = mv
+            next_loc = loc_after_direction(cur_loc, direction)
+
+            # Base priority: EGG > TURD > MOVE
+            pri = self.move_priority(mv)
+
+            # Corner rule: penalize turds at the edge
+            if is_corner and movetype == MoveType.TURD:
+                pri -= 2   # from 1 -> -1 (below MOVE=0)
+
+            # If we're dropping a TURD next to an existing TURD, devalue it
+            if movetype == MoveType.TURD and has_adjacent_turd(next_loc):
+                pri -= 1
+
+            # Phase-dependent adjustments based on opponent space
+            if opp_space > CRUSH_THRESHOLD:
+                # --- Full Tal mode: expand our region, shrink theirs ---
+                if movetype == MoveType.TURD:
+                    if turd_hot_zone and remaining_turds >= 2:
+                        pri += 1   # good place/time to use turd
+                    else:
+                        pri -= 1   # don't waste turds in bad zones
+
+            elif opp_space > FINISH_THRESHOLD:
+                # --- Crush mode: they’re cramped but alive ---
+                if movetype == MoveType.EGG:
+                    pri += 1       # eggs start to matter more
+                if movetype == MoveType.TURD:
+                    pri -= 1       # be more conservative with turds
+
+            else:
+                # --- Finish mode: they have very little space left ---
+                if movetype == MoveType.EGG:
+                    pri += 2       # slam eggs to convert
+                if movetype == MoveType.TURD:
+                    pri -= 2       # almost never spend turds now
+
+            dir_score = self.direction_score(board, mv)
+
+            scored.append((pri, dir_w * dir_score, mv))
+
+        # 4. Sort by (priority, direction_score)
+        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+
+        return [t[2] for t in scored]
     
-    def space_advantage(self, my_eggs, my_turds, turn: int) -> float:
-        """
-        Rewards for board control:
-        - Real center 2×2: eggs +1.0, turds +0.8
-        - Center 4×4: eggs +0.5, turds +0.5
-        - Corner squares 1×1: eggs +2.0
-
-        In early-mid game (turn <= 15), center control
-        (2×2 + 4×4) gets an extra multiplier.
-        """
-
-        # Real center (2×2)
-        real_center = {(3, 3), (3, 4), (4, 3), (4, 4)}
-
-        # Center (4×4)
-        center_rows = {2, 3, 4, 5}
-        center_cols = {2, 3, 4, 5}
-
-        # Corners (8×8 board)
-        corners = {(0, 0), (0, 7), (7, 0), (7, 7)}
-
-        bonus = 0.0
-
-        # Early-mid game: boost center control
-        center_mult = 2 if turn <= 15 else 1.0
-
-        # Eggs
-        for (x, y) in my_eggs:
-            if (x, y) in corners:
-                # Corner bonus is from game rules, don't scale with time
-                bonus += 2.0
-            elif (x, y) in real_center:
-                bonus += center_mult * 2.0
-            elif x in center_rows and y in center_cols:
-                bonus += center_mult * 1
-
-        # Turds
-        for (x, y) in my_turds:
-            if (x, y) in real_center:
-                bonus += center_mult * 1.5
-            elif x in center_rows and y in center_cols:
-                bonus += center_mult * 1
-
-        return bonus
-
-
-
-
-    def order_moves(self, board: board.Board, moves, blocked_dir=None):
-        cur_loc = board.chicken_player.get_location()
-        dim = board.game_map.MAP_SIZE
-        x, y = cur_loc
-
-        opp_pos = board.chicken_enemy.get_location()
-        dist_to_opp = self.manhattan(cur_loc, opp_pos)
-
-        # --- geometric classification -----------------------------------------
-        is_corner = (x < 2 or x >= dim - 2) or (y < 2 or y >= dim - 2)
-        is_center = (2 <= x <= 5) and (2 <= y <= 5)
-
-        # "Hot zone" where offensive turds make sense:
-        turd_hot_zone = is_center or (dist_to_opp <= 3)
-
-        # Remaining turds (max 5)
-        my_turds = board.turds_player
-        remaining_turds = max(0, 5 - len(my_turds))
-
-        # Opponent egg-path mobility: how free they still are to grow eggs.
-        opp_mob = self.opp_egg_path_mobility(board)
-        FINISH_THRESHOLD = 8.0    # basically egg-dead
-        CRUSH_THRESHOLD  = 20.0   # significantly cramped
-
-        # ---------------------------------------------------------------------
-        # 1. Egg filtering (keep your original behavior)
-        egg_moves = [mv for mv in moves if mv[1] == MoveType.EGG]
-        if egg_moves and not is_center:
-            # In non-center regions: only egg moves are kept
-            moves = egg_moves
-        # In center: keep all moves; eggs still sort first later
-
-        # 1.5 Prevent immediate backtracking
-        if blocked_dir is not None:
-            non_backtracking = []
-            for direction, movetype in moves:
-                if direction != blocked_dir:
-                    non_backtracking.append((direction, movetype))
-            if non_backtracking:
-                moves = non_backtracking
-
-        # 2. Remove moves stepping on known trapdoors (absolute)
-        safe_moves = []
-        for direction, movetype in moves:
-            next_loc = loc_after_direction(cur_loc, direction)
-            if next_loc not in self.known_traps:
-                safe_moves.append((direction, movetype))
-        if safe_moves:
-            moves = safe_moves
-
-        # 3. Score moves (Tal-style phases)
-        scored: list[tuple[float, float, tuple[Direction, MoveType]]] = []
-
-        # Weight of directional score by phase
-        if opp_mob > CRUSH_THRESHOLD:
-            dir_w = 1.0   # full Tal: directional space really matters
-        elif opp_mob > FINISH_THRESHOLD:
-            dir_w = 0.7   # crush mode
-        else:
-            dir_w = 0.3   # finish mode: eggs > direction
-
-        for mv in moves:
-            direction, movetype = mv
-
-            # Base priority: EGG > TURD > MOVE
-            pri = self.move_priority(mv)
-
-            # Corner rule: penalize turds at the edge (your original idea)
-            if is_corner and movetype == MoveType.TURD:
-                pri = -1  # below MOVE
-
-            # Phase-dependent adjustments
-            if opp_mob > CRUSH_THRESHOLD:
-                # --- Full Tal mode: kill their mobility ---
-                if movetype == MoveType.TURD:
-                    if turd_hot_zone and remaining_turds >= 2:
-                        # In center / near opp, with ammo left: boost turd.
-                        pri += 1
-                    else:
-                        # Outside good zones or almost out: downweight.
-                        pri -= 1
-
-            elif opp_mob > FINISH_THRESHOLD:
-                # --- Crush mode: they’re cramped, but not dead ---
-                if movetype == MoveType.EGG:
-                    pri += 1      # eggs get a bit more important
-                if movetype == MoveType.TURD:
-                    pri -= 1      # conserve turds unless it's really good
-
-            else:
-                # --- Finish mode: convert position into egg lead ---
-                if movetype == MoveType.EGG:
-                    pri += 2      # slam eggs
-                if movetype == MoveType.TURD:
-                    pri -= 2      # almost never spend turds now
-
-            dir_score = self.direction_score(board, mv)
-
-            scored.append((pri, dir_w * dir_score, mv))
-
-        # 4. Sort by (priority, direction_score)
-        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
-
-        return [t[2] for t in scored]
-
-
     def move_priority(self, mv) -> int:
-        """
-        Base move priority. Contextual adjustments happen in order_moves().
-        """
-        _, movetype = mv
-        if movetype == MoveType.EGG:
-            return 2
-        if movetype == MoveType.TURD:
-            return 1
-        return 0
-    def order_moves(self, board: board.Board, moves, blocked_dir=None):
-        cur_loc = board.chicken_player.get_location()
-        dim = board.game_map.MAP_SIZE
-        x, y = cur_loc
-
-        opp_pos = board.chicken_enemy.get_location()
-        dist_to_opp = self.manhattan(cur_loc, opp_pos)
-
-        # --- geometric classification -----------------------------------------
-        is_corner = (x < 2 or x >= dim - 2) or (y < 2 or y >= dim - 2)
-        is_center = (2 <= x <= 5) and (2 <= y <= 5)
-
-        # "Hot zone" where offensive turds make sense:
-        turd_hot_zone = is_center or (dist_to_opp <= 3)
-
-        # Remaining turds (max 5)
-        my_turds = board.turds_player
-        remaining_turds = max(0, 5 - len(my_turds))
-
-        # Opponent egg-path mobility: how free they still are to grow eggs.
-        opp_mob = self.opp_egg_path_mobility(board)
-        FINISH_THRESHOLD = 8.0    # basically egg-dead
-        CRUSH_THRESHOLD  = 20.0   # significantly cramped
-
-        # ---------------------------------------------------------------------
-        # 1. Egg filtering (keep your original behavior)
-        egg_moves = [mv for mv in moves if mv[1] == MoveType.EGG]
-        if egg_moves and not is_center:
-            # In non-center regions: only egg moves are kept
-            moves = egg_moves
-        # In center: keep all moves; eggs still sort first later
-
-        # 1.5 Prevent immediate backtracking
-        if blocked_dir is not None:
-            non_backtracking = []
-            for direction, movetype in moves:
-                if direction != blocked_dir:
-                    non_backtracking.append((direction, movetype))
-            if non_backtracking:
-                moves = non_backtracking
-
-        # 2. Remove moves stepping on known trapdoors (absolute)
-        safe_moves = []
-        for direction, movetype in moves:
-            next_loc = loc_after_direction(cur_loc, direction)
-            if next_loc not in self.known_traps:
-                safe_moves.append((direction, movetype))
-        if safe_moves:
-            moves = safe_moves
-
-        # 3. Score moves (Tal-style phases)
-        scored: list[tuple[float, float, tuple[Direction, MoveType]]] = []
-
-        # Weight of directional score by phase
-        if opp_mob > CRUSH_THRESHOLD:
-            dir_w = 1.0   # full Tal: directional space really matters
-        elif opp_mob > FINISH_THRESHOLD:
-            dir_w = 0.7   # crush mode
-        else:
-            dir_w = 0.3   # finish mode: eggs > direction
-
-        for mv in moves:
             direction, movetype = mv
-
-            # Base priority: EGG > TURD > MOVE
-            pri = self.move_priority(mv)
-
-            # Corner rule: penalize turds at the edge (your original idea)
-            if is_corner and movetype == MoveType.TURD:
-                pri = -1  # below MOVE
-
-            # Phase-dependent adjustments
-            if opp_mob > CRUSH_THRESHOLD:
-                # --- Full Tal mode: kill their mobility ---
-                if movetype == MoveType.TURD:
-                    if turd_hot_zone and remaining_turds >= 2:
-                        # In center / near opp, with ammo left: boost turd.
-                        pri += 1
-                    else:
-                        # Outside good zones or almost out: downweight.
-                        pri -= 1
-
-            elif opp_mob > FINISH_THRESHOLD:
-                # --- Crush mode: they’re cramped, but not dead ---
-                if movetype == MoveType.EGG:
-                    pri += 1      # eggs get a bit more important
-                if movetype == MoveType.TURD:
-                    pri -= 1      # conserve turds unless it's really good
-
-            else:
-                # --- Finish mode: convert position into egg lead ---
-                if movetype == MoveType.EGG:
-                    pri += 2      # slam eggs
-                if movetype == MoveType.TURD:
-                    pri -= 2      # almost never spend turds now
-
-            dir_score = self.direction_score(board, mv)
-
-            scored.append((pri, dir_w * dir_score, mv))
-
-        # 4. Sort by (priority, direction_score)
-        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
-
-        return [t[2] for t in scored]
-
-
-    def move_priority(self, mv) -> int:
-        """
-        Base move priority. Contextual adjustments happen in order_moves().
-        """
-        _, movetype = mv
-        if movetype == MoveType.EGG:
-            return 2
-        if movetype == MoveType.TURD:
-            return 1
-        return 0
-
-
+            if movetype == MoveType.EGG:
+                return 2
+            if movetype == MoveType.TURD:
+                return 1
+            return 0
+    
     def direction_score(self, cur_board: board.Board, mv) -> float:
         """
-        Directional heuristic: for the chosen direction, look at the
-        half-board region in that direction from our current position.
+        Directional heuristic aligned with evaluate():
 
-        Tal bias:
-            + favor lots of unlaid squares (future space/eggs)
-            - penalize opp eggs/turds (their control)
-            - strongly penalize trap probability
+        For the half-board region in the given direction, score:
+
+            + (# of egg-eligible squares for us)
+            - (# of egg-eligible squares for opponent)
+            - weighted trap probability in that region
+
+        Egg-eligible = empty + correct parity for that player.
+
+        This is a cheap, 1-ply proxy for how much this move tends to
+        expand our future egg space vs theirs, while avoiding traps.
         """
+
         direction, _ = mv
         dim = cur_board.game_map.MAP_SIZE
 
         my_pos = cur_board.chicken_player.get_location()
         mx, my = my_pos
 
-        eggs_player = cur_board.eggs_player
-        eggs_enemy = cur_board.eggs_enemy
-        turds_player = cur_board.turds_player
-        turds_enemy = cur_board.turds_enemy
-        occupied = eggs_player | eggs_enemy | turds_player | turds_enemy
+        eggs_p = cur_board.eggs_player
+        eggs_e = cur_board.eggs_enemy
+        turds_p = cur_board.turds_player
+        turds_e = cur_board.turds_enemy
 
+        occupied = eggs_p | eggs_e | turds_p | turds_e
+
+        # Parities: (0,0) even, (0,1) odd; we infer roles via engine legality.
+        my_even  = cur_board.can_lay_egg_at_loc((0, 0))
+        opp_even = cur_board.can_lay_egg_at_loc((0, 1))
+
+        # Define the region for this direction
         def in_region(ix: int, iy: int) -> bool:
             if direction == Direction.UP:
                 return iy > my
@@ -693,12 +580,11 @@ class PlayerAgent:
             elif direction == Direction.LEFT:
                 return ix < mx
             else:
-                # STAY or weird dir: treat whole board as region
+                # STAY or weird dir: treat whole board as neutral
                 return True
 
-        unlaid = 0
-        opp_eggs_count = 0
-        opp_turds_count = 0
+        my_egg_space = 0
+        opp_egg_space = 0
         trap_prob_sum = 0.0
 
         for ix in range(dim):
@@ -708,23 +594,28 @@ class PlayerAgent:
 
                 pos = (ix, iy)
 
-                if pos not in occupied:
-                    unlaid += 1
-
-                if pos in eggs_enemy:
-                    opp_eggs_count += 1
-                if pos in turds_enemy:
-                    opp_turds_count += 1
-
+                # Trap probability always matters, even on occupied squares.
                 trap_prob_sum += self.trap_belief.prob_at(pos)
 
-        # Tuned weights: strong positive for space, strong negative for traps.
+                # Egg-eligible squares must be empty.
+                if pos in occupied:
+                    continue
+
+                even = ((ix + iy) % 2 == 0)
+
+                if even == my_even:
+                    my_egg_space += 1
+                if even == opp_even:
+                    opp_egg_space += 1
+
+        # Weights: positive for our future egg space, negative for theirs,
+        # and strong negative for traps in that region.
+        TRAP_DIR_WEIGHT = 6.0
+
         score = (
-            1.0 * float(unlaid)
-            - 0.5 * opp_eggs_count
-            - 1.0 * opp_turds_count
-            - 8.0 * trap_prob_sum    # high but not infinite
+            1.0 * float(my_egg_space)
+            - 1.0 * float(opp_egg_space)
+            - TRAP_DIR_WEIGHT * trap_prob_sum
         )
 
         return score
-
