@@ -24,7 +24,7 @@ class PlayerAgent:
         self.visited = [[False for _ in range(8)] for _ in range(8)]
 
         # Hyperparameters:
-        self.max_depth = 11     # typical; drop to 2 if time is low
+        self.max_depth = 10     # typical; drop to 2 if time is low
         self.trap_hard = 0.95   # hard “lava” threshold
         self.trap_weight = 50 # soft risk penalty scale
         self.look_radius = 3 #for heauristic evalutions
