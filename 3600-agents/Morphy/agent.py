@@ -21,6 +21,7 @@ class PlayerAgent:
         
         #anti repetition
         self.prev_pos: Tuple[int, int] | None = None
+        self.visited = [[False for _ in range(8)] for _ in range(8)]
 
         # Hyperparameters:
         self.max_depth = 10     # typical; drop to 2 if time is low
@@ -34,6 +35,9 @@ class PlayerAgent:
         sensor_data: List[Tuple[bool, bool]],
         time_left: Callable,
     ):
+        x, y = board.chicken_player.get_location()
+        if 0 <= x < len(self.visited) and 0 <= y < len(self.visited[0]):
+            self.visited[x][y] = True
         # 1) Collapse beliefs on any trapdoors the engine has discovered
         found = board.found_trapdoors 
         new_traps = found - self.known_traps
@@ -173,6 +177,7 @@ class PlayerAgent:
     def manhattan(self, a, b) -> int:
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
+    #TODO: Consider adding "momentum" metric, where if you pick a direction you keep going at it
     def evaluate(self, cur_board: board.Board) -> float:
         my_pos = cur_board.chicken_player.get_location()
         opp_pos = cur_board.chicken_enemy.get_location()  # currently unused, but keep if you want later
@@ -190,7 +195,7 @@ class PlayerAgent:
 
         # If no moves left, just return material + trap penalty at current location.
         trap_here = self.trap_belief.prob_at(my_pos)
-        trap_penalty_here = 5.0 * trap_here
+        trap_penalty_here = 10.0 * trap_here
         if moves_left <= 0:
             return (base_me - base_opp) - trap_penalty_here
 
@@ -240,7 +245,7 @@ class PlayerAgent:
             opp_eggs_count = 0
             opp_turds_count = 0
             trap_prob_sum = 0.0
-
+            newly_visited = 0
             for x in range(x0, x0 + d):
                 for y in range(y0, y0 + d):
                     s = (x, y)
@@ -253,6 +258,10 @@ class PlayerAgent:
                         opp_eggs_count += 1
                     if s in opp_turds:
                         opp_turds_count += 1
+                    if not self.visited[x][y]:
+                        newly_visited += 1
+
+                    
 
                     trap_prob_sum += self.trap_belief.prob_at(s)
 
@@ -264,6 +273,7 @@ class PlayerAgent:
             #                - opp_future_factor (optional)
             score_region = (
                 float(unclaimed)
+                + 0.5 * newly_visited
                 - 0.5 * opp_eggs_count
                 - 1.0 * opp_turds_count
                 - 5.0 * trap_prob_sum
@@ -281,7 +291,7 @@ class PlayerAgent:
 
         # Combine: real eggs + discounted expected future eggs - trap risk where we stand.
         base_diff = base_me - base_opp
-        score = base_diff + 0.6 * (future_gain - trap_penalty_here - opp_future_factor)
+        score = base_diff + 0.5 * (future_gain - trap_penalty_here - opp_future_factor) - trap_penalty_here 
 
         return score
 
