@@ -62,6 +62,17 @@ class PlayerAgent:
         best_val = -INF
 
         ordered = self.order_moves(board, moves, blocked_dir=None)
+        # --- Root-level backtracking prevention ---
+        if self.prev_pos is not None:
+            cur_loc = board.chicken_player.get_location()
+            filtered = []
+            for direction, movetype in ordered:
+                next_loc = loc_after_direction(cur_loc, direction)
+                if next_loc != self.prev_pos:
+                    filtered.append((direction, movetype))
+            # Only override if we didn't kill everything
+            if filtered:
+                ordered = filtered
 
         alpha, beta = -INF, INF
         for mv in ordered:
@@ -293,50 +304,58 @@ class PlayerAgent:
             future_gain = 0.0
         else:
             future_gain = best_region_score
-        center_bonus = self.space_advantage(my_eggs, my_turds)
+        center_bonus = self.space_advantage(my_eggs, my_turds, cur_board.turn_count)
         # Combine: real eggs + discounted expected future eggs - trap risk where we stand.
         base_diff = base_me - base_opp
-        score = base_diff + 0.5 * (future_gain - trap_penalty_here - opp_future_factor) - trap_penalty_here + center_bonus
+        score = base_diff + 0.5 * (future_gain - trap_penalty_here - opp_future_factor) - 1.3*trap_penalty_here + center_bonus
 
         return score
     
-    def space_advantage(self, my_eggs, my_turds) -> float:
+    def space_advantage(self, my_eggs, my_turds, turn: int) -> float:
         """
         Rewards for board control:
         - Real center 2×2: eggs +1.0, turds +0.8
         - Center 4×4: eggs +0.5, turds +0.5
         - Corner squares 1×1: eggs +2.0
+
+        In early-mid game (turn <= 15), center control
+        (2×2 + 4×4) gets an extra multiplier.
         """
 
         # Real center (2×2)
-        real_center = {(3,3), (3,4), (4,3), (4,4)}
+        real_center = {(3, 3), (3, 4), (4, 3), (4, 4)}
 
         # Center (4×4)
-        center_rows = {2,3,4,5}
-        center_cols = {2,3,4,5}
+        center_rows = {2, 3, 4, 5}
+        center_cols = {2, 3, 4, 5}
 
         # Corners (8×8 board)
-        corners = {(0,0), (0,7), (7,0), (7,7)}
+        corners = {(0, 0), (0, 7), (7, 0), (7, 7)}
 
         bonus = 0.0
+
+        # Early-mid game: boost center control
+        center_mult = 2 if turn <= 15 else 1.0
 
         # Eggs
         for (x, y) in my_eggs:
             if (x, y) in corners:
+                # Corner bonus is from game rules, don't scale with time
                 bonus += 2.0
             elif (x, y) in real_center:
-                bonus += 1.0
+                bonus += center_mult * 2.0
             elif x in center_rows and y in center_cols:
-                bonus += 0.5
+                bonus += center_mult * 1
 
         # Turds
         for (x, y) in my_turds:
             if (x, y) in real_center:
-                bonus += 0.8
+                bonus += center_mult * 1.5
             elif x in center_rows and y in center_cols:
-                bonus += 0.5
+                bonus += center_mult * 1
 
         return bonus
+
 
 
 
@@ -366,7 +385,7 @@ class PlayerAgent:
         if blocked_dir is not None:
             non_backtracking = []
             for direction, movetype in moves:
-                if direction is not blocked_dir:
+                if direction != blocked_dir:
                     non_backtracking.append((direction, movetype))
             if non_backtracking:
                 moves = non_backtracking
