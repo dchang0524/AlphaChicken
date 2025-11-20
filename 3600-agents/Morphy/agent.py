@@ -56,7 +56,7 @@ class PlayerAgent:
         depth = self.choose_depth(board.player_time, board.turn_count)
         moves = board.get_valid_moves()
         if not moves:
-            return (Direction.STAY, MoveType.PLAIN)
+            return -INF
 
         ordered = self.order_moves(board, moves, blocked_dir=None)
 

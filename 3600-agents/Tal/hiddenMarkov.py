@@ -197,6 +197,50 @@ class TrapdoorBelief:
             self.p_odd, player_pos, heard_o, felt_o
         )
 
+    def _zero_and_renorm(self, pos: Tuple[int, int]) -> None:
+        """
+        Internal helper:
+        - Set probability of `pos` to 0 in the appropriate parity map.
+        - Renormalize that map so probabilities still sum to 1
+          (condition on "trap is not here").
+        """
+        # Select parity map
+        if (pos[0] + pos[1]) % 2 == 0:
+            pmap = self.p_even
+        else:
+            pmap = self.p_odd
+
+        if pos not in pmap:
+            return  # already impossible or outside support
+
+        old = pmap.pop(pos)
+        remaining_mass = 1.0 - old
+
+        if remaining_mass <= 0.0 or not pmap:
+            # Degenerate (should not really happen unless we've
+            # eliminated every possible square); in that case,
+            # leave as-is or re-init prior if you prefer.
+            return
+
+        # Renormalize
+        for k in pmap:
+            pmap[k] /= remaining_mass
+
+    def mark_safe(self, pos: Tuple[int, int]) -> None:
+        """
+        Incorporate the fact that `pos` has been stepped on by *someone*
+        without triggering a trap. Hence, it CANNOT be the trapdoor.
+        """
+        self._zero_and_renorm(pos)
+
+    def mark_safes(self, positions: List[Tuple[int, int]]) -> None:
+        """
+        Batch version for convenience.
+        """
+        for pos in positions:
+            self.mark_safe(pos)
+
+
     # ------------------------------------------------------------------
     # Query interface
     # ------------------------------------------------------------------

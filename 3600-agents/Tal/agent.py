@@ -26,12 +26,12 @@ class PlayerAgent:
         self.visited = [[False for _ in range(8)] for _ in range(8)]
 
         # Hyperparameters:
-        self.max_depth = 10     # typical; drop to 2 if time is low
-        self.trap_hard = 0.50   # hard “lava” threshold
+        self.max_depth = 8     # typical; drop to 2 if time is low
+        self.trap_hard = 0.5   # hard “lava” threshold
         self.trap_block = 15 # number of turns you should completely avoid trapdoors
         self.trap_weight = 50 # soft risk penalty scale
         self.look_radius = 3 #for heauristic evalutions
-        self.centralize_turn_cap = 4   # you can tune this
+        self.endgame = 8
 
 
     def play(
@@ -53,6 +53,8 @@ class PlayerAgent:
         # 2) Normal HMM update with current senses
         my_pos = board.chicken_player.get_location()
         self.trap_belief.update(my_pos, sensor_data)
+        self.trap_belief.mark_safe(my_pos)
+        self.trap_belief.mark_safe(board.chicken_enemy.get_location())
 
         moves = board.get_valid_moves()
 
@@ -68,7 +70,7 @@ class PlayerAgent:
         #Alpha-Beta Search for best move
         depth = self.choose_depth(board.player_time, board.turn_count)
         if not moves:
-            return (Direction.STAY, MoveType.PLAIN)
+            return -INF
 
         best_move = None
         best_val = -INF
@@ -118,7 +120,9 @@ class PlayerAgent:
         t = time_left
         #TODO: In the opening stage, don't waste too much time
         #TODO: Variable Depth, depending on how complex the position is
-
+        inc = 0
+        # if 40 - turn < self.endgame:
+        #     inc = 3
         #if turn < 4:
             #return 5
 
@@ -366,7 +370,7 @@ class PlayerAgent:
             # Opp is already strangled OR not many moves left:
             # prioritize egg difference hard.
             return (
-                10.0 * base_diff       # main term: egg count
+                100.0 * base_diff       # main term: egg count
                 - 1.0 * opp_voronoi   # small residual preference for keeping them cramped
             )
 
