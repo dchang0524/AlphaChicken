@@ -25,7 +25,7 @@ class PlayerAgent:
 
         # Hyperparameters:
         self.max_depth = 10     # typical; drop to 2 if time is low
-        self.trap_hard = 0.95   # hard “lava” threshold
+        self.trap_hard = 0.5   # hard “lava” threshold
         self.trap_weight = 50 # soft risk penalty scale
         self.look_radius = 3 #for heauristic evalutions
 
@@ -56,10 +56,14 @@ class PlayerAgent:
         depth = self.choose_depth(board.player_time, board.turn_count)
         moves = board.get_valid_moves()
         if not moves:
-            return (Direction.STAY, MoveType.MOVE)
+            return (Direction.STAY, MoveType.PLAIN)
 
-        best_move = None
+        ordered = self.order_moves(board, moves, blocked_dir=None)
+
+        alpha, beta = -INF, INF
         best_val = -INF
+        best_move = None
+
 
         ordered = self.order_moves(board, moves, blocked_dir=None)
         # --- Root-level backtracking prevention ---
@@ -74,20 +78,30 @@ class PlayerAgent:
             if filtered:
                 ordered = filtered
 
-        alpha, beta = -INF, INF
         for mv in ordered:
             child = self.simulate_move(board, mv)
             child_blocked = self.opposite(mv[0])
-            val = self.alphabeta(
-                child, depth - 1, alpha, beta, maximizing=False, time_left=time_left, blocked_dir=child_blocked
-            )
+
+            # Now it's opponent's POV
+            child.reverse_perspective()
+
+            # Root negamax call (note the sign flip and window swap)
+            val = -self.negamax(child,
+                                depth - 1,
+                                -beta,
+                                -alpha,
+                                time_left,
+                                blocked_dir=child_blocked)
+
             if val > best_val:
                 best_val = val
                 best_move = mv
-            alpha = max(alpha, best_val)
-            if beta <= alpha:
+
+            if best_val > alpha:
+                alpha = best_val
+            if alpha >= beta:
                 break
-        self.prev_pos = my_pos
+
         return best_move
     
     def choose_depth(self, time_left, turn):
@@ -119,8 +133,26 @@ class PlayerAgent:
         return self.max_depth
 
 
-    def alphabeta(self, board, depth, alpha, beta, maximizing, time_left, blocked_dir):
-        # Fail-safe: if we’re almost out of time, cut search
+    def negamax(self,
+            board: board.Board,
+            depth: int,
+            alpha: float,
+            beta: float,
+            time_left: Callable,
+            blocked_dir=None) -> float:
+        """
+        Negamax on the asymmetric POV board.
+
+        Invariant:
+        - At every node, `board` is from the POV of the *current player*.
+        - `evaluate(board)` returns score from the POV of the current player.
+        - We flip POV with board.reverse_perspective() after every move.
+        - We negate the returned value when unwinding recursion.
+
+        value(position for current player) = - value(position for opponent)
+        """
+
+        # Hard time cutoff
         if time_left() < 0.05:
             return self.evaluate(board)
 
@@ -128,40 +160,39 @@ class PlayerAgent:
             return self.evaluate(board)
 
         moves = board.get_valid_moves()
-        if not moves: #no moves left
-            # 'maximizing' == True  → it's our move → we lose
-            # 'maximizing' == False → it's opponent's move → they lose → we win
-            return -INF if maximizing else INF
+        if not moves:
+            # No moves for the current POV → they lose
+            return -INF
 
+        # You can still use blocked_dir if you want, or ignore it
         moves = self.order_moves(board, moves, blocked_dir)
 
-        if maximizing:
-            value = -INF
-            for mv in moves:
-                child = self.simulate_move(board, mv)
-                child_blocked = self.opposite(mv[0])
+        best = -INF
 
-                value = max(
-                    value,
-                    self.alphabeta(child, depth - 1, alpha, beta, False, time_left, blocked_dir=child_blocked),
-                )
-                alpha = max(alpha, value)
-                if beta <= alpha:
-                    break
-            return value
-        else:
-            value = INF
-            for mv in moves:
-                child = self.simulate_move(board, mv)
-                child_blocked = self.opposite(mv[0])
-                value = min(
-                    value,
-                    self.alphabeta(child, depth - 1, alpha, beta, True, time_left, blocked_dir=child_blocked),
-                )
-                beta = min(beta, value)
-                if beta <= alpha:
-                    break
-            return value
+        for mv in moves:
+            child = self.simulate_move(board, mv)
+            child_blocked = self.opposite(mv[0])
+
+            # Now it's opponent's turn → flip POV
+            child.reverse_perspective()
+
+            # Negamax step: opponent's best is negative for us
+            score = -self.negamax(child,
+                                depth - 1,
+                                -beta,
+                                -alpha,
+                                time_left,
+                                blocked_dir=child_blocked)
+
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        return best
+
 
     def simulate_move(self, b: board.Board, mv) -> board.Board:
         direction, movetype = mv
@@ -195,79 +226,121 @@ class PlayerAgent:
 
     #TODO: Consider adding "momentum" metric, where if you pick a direction you keep going at it
     def evaluate(self, cur_board: board.Board) -> float:
-        """
-        Evaluation using:
-        - Egg difference (current eggs on board)
-        - Voronoi-style egg space control (space_control)
-        - Local trapdoor risk
-        - Center-breakthrough bonus with time decay
-        """
-
-        my_eggs  = cur_board.eggs_player
-        opp_eggs = cur_board.eggs_enemy
-
-        base_me   = len(my_eggs)
-        base_opp  = len(opp_eggs)
-        base_diff = base_me - base_opp
-
-        # Voronoi egg-space control
-        my_space, opp_space = self.space_control(cur_board)
-        space_gap = my_space - opp_space
-
-        # Local trap risk
         my_pos = cur_board.chicken_player.get_location()
+        opp_pos = cur_board.chicken_enemy.get_location()  # currently unused, but keep if you want later
+
+        my_eggs = cur_board.eggs_player
+        opp_eggs = cur_board.eggs_enemy
+        my_turds = cur_board.turds_player
+        opp_turds = cur_board.turds_enemy
+
+        base_me = len(my_eggs)
+        base_opp = len(opp_eggs)
+
+        moves_left = cur_board.MAX_TURNS - cur_board.turn_count
+        dim = cur_board.game_map.MAP_SIZE
+
+        # If no moves left, just return material + trap penalty at current location.
         trap_here = self.trap_belief.prob_at(my_pos)
-        TRAP_LOCAL_COST = 10.0
-        trap_penalty = TRAP_LOCAL_COST * trap_here
+        trap_penalty_here = 10.0 * trap_here
+        if moves_left <= 0:
+            return (base_me - base_opp) - trap_penalty_here
 
-        # Time-decay factor: early turns get ~1, late turns ~0
-        max_turns = cur_board.MAX_TURNS
-        t = cur_board.turn_count
-        if max_turns > 0:
-            decay = max(0.0, (max_turns - t) / max_turns)
+        # --- d = sqrt(moves_left), clamped to [1, dim] ---
+        d = int(moves_left ** 0.5)
+        if d < 1:
+            d = 1
+        if d > dim:
+            d = dim
+
+        occupied = my_eggs | opp_eggs | my_turds | opp_turds
+
+        mx, my = my_pos
+
+        # Candidate windows: treat our position as each corner of the dxd square,
+        # then clamp to board. Deduplicate resulting (x0, y0).
+        candidate_windows = set()
+        corner_offsets = [
+            (0, 0),          # our pos at top-left of window
+            (d - 1, 0),      # our pos at top-right
+            (0, d - 1),      # bottom-left
+            (d - 1, d - 1),  # bottom-right
+        ]
+
+        for offx, offy in corner_offsets:
+            x0 = mx - offx
+            y0 = my - offy
+            # clamp so window stays on board
+            if x0 < 0:
+                x0 = 0
+            if y0 < 0:
+                y0 = 0
+            if x0 > dim - d:
+                x0 = dim - d
+            if y0 > dim - d:
+                y0 = dim - d
+            candidate_windows.add((x0, y0))
+
+        # Opponent future placement penalty:
+        region_area = d * d
+        opp_future_factor = (moves_left / 4.0) * (region_area / float(dim * dim))
+
+        best_region_score = float("-inf")
+
+        for x0, y0 in candidate_windows:
+            unclaimed = 0
+            opp_eggs_count = 0
+            opp_turds_count = 0
+            trap_prob_sum = 0.0
+            newly_visited = 0
+            for x in range(x0, x0 + d):
+                for y in range(y0, y0 + d):
+                    s = (x, y)
+
+                    # "Unclaimed eggs": squares not occupied by any egg or turd
+                    if s not in occupied:
+                        unclaimed += 1
+
+                    if s in opp_eggs:
+                        opp_eggs_count += 1
+                    if s in opp_turds:
+                        opp_turds_count += 1
+                    if not self.visited[x][y]:
+                        newly_visited += 1
+
+                    
+
+                    trap_prob_sum += self.trap_belief.prob_at(s)
+
+            # Your heuristic:
+            # score_region = (#unclaimed)
+            #                - 0.5 * (#opp eggs)
+            #                - 1.0 * (#opp turds)
+            #                - 5.0 * (sum trap probabilities in region)
+            #                - opp_future_factor (optional)
+            score_region = (
+                float(unclaimed)
+                + 0.5 * newly_visited
+                - 0.5 * opp_eggs_count
+                - 1.0 * opp_turds_count
+                - 5.0 * trap_prob_sum
+                - opp_future_factor
+            )
+
+            if score_region > best_region_score:
+                best_region_score = score_region
+
+        # If something went very wrong and we never set best_region_score, fall back.
+        if best_region_score == float("-inf"):
+            future_gain = 0.0
         else:
-            decay = 0.0
+            future_gain = best_region_score
+        center_bonus = self.space_advantage(my_eggs, my_turds, cur_board.turn_count)
+        # Combine: real eggs + discounted expected future eggs - trap risk where we stand.
+        base_diff = base_me - base_opp
+        score = base_diff + 0.5 * (future_gain - trap_penalty_here - opp_future_factor) - 1.3*trap_penalty_here + center_bonus
 
-        # Center-breakthrough bonus:
-        # count our eggs/turds that lie past the frontier
-        center_adv_count = 0
-        for pos in my_eggs | cur_board.turds_player:
-            if self.is_forward_square(pos):
-                center_adv_count += 1
-
-        CENTER_WEIGHT = 3.0  # tuneable
-        center_bonus = CENTER_WEIGHT * center_adv_count * decay
-
-        # Phase logic driven purely by opponent egg-space
-        FINISH_THRESHOLD = 10   # they control very few egg-eligible squares
-        CRUSH_THRESHOLD  = 26   # clearly cramped but not dead
-
-        # a) Finish mode: low opp space -> convert
-        if opp_space <= FINISH_THRESHOLD:
-            return (
-                5.0 * base_diff
-                + 4.0 * space_gap
-                + 2.0 * center_bonus
-                - 1.0 * trap_penalty
-            )
-
-        # b) Crush mode: medium opp space
-        if opp_space <= CRUSH_THRESHOLD:
-            return (
-                4.0 * space_gap
-                + 3.0 * base_diff
-                + 1.5 * center_bonus
-                - 1.0 * trap_penalty
-            )
-
-        # c) Full Tal mode: they still have a lot of egg-space
-        return (
-            6.0 * space_gap        # dominate future egg territory
-            + 1.0 * base_diff      # eggs secondary
-            + 2.0 * center_bonus   # strong incentive to break through early
-            - 1.2 * trap_penalty
-        )
-
+        return score
     
     def space_advantage(self, my_eggs, my_turds, turn: int) -> float:
         """
@@ -313,34 +386,6 @@ class PlayerAgent:
                 bonus += center_mult * 1
 
         return bonus
-    
-    def is_forward_square(self, pos: tuple[int, int]) -> bool:
-        """
-        Returns True if `pos` is on the 'far side' of the frontier
-        relative to our spawn position.
-
-        Frontier is defined by x=3/4 and y=3/4 splits on an 8×8 board.
-        """
-        sx, sy = self.spawn_pos
-        x, y = pos
-
-        # top-left spawn: [0..3]x[0..3]
-        if sx <= 3 and sy <= 3:
-            return (x >= 4) or (y >= 4)
-
-        # top-right spawn: [0..3]x[4..7]
-        if sx <= 3 and sy >= 4:
-            return (x >= 4) or (y <= 3)
-
-        # bottom-left spawn: [4..7]x[0..3]
-        if sx >= 4 and sy <= 3:
-            return (x <= 3) or (y >= 4)
-
-        # bottom-right spawn: [4..7]x[4..7]
-        return (x <= 3) or (y <= 3)
-
-
-
 
     def order_moves(self, board: board.Board, moves, blocked_dir=None):
         cur_loc = board.chicken_player.get_location()
@@ -373,14 +418,20 @@ class PlayerAgent:
             if non_backtracking:
                 moves = non_backtracking
 
-        # 2. Remove moves stepping on known trapdoors
-        safe_moves = []
+        # 2. Remove moves stepping on known / high-prob trapdoors
+        filtered: list[tuple[Direction, MoveType]] = []
         for direction, movetype in moves:
             next_loc = loc_after_direction(cur_loc, direction)
-            if next_loc not in self.known_traps:
-                safe_moves.append((direction, movetype))
-        if safe_moves:
-            moves = safe_moves
+            # Never step on discovered trapdoors
+            if next_loc in self.known_traps:
+                continue
+            # Block squares whose trapdoor probability is too high
+            trap_p = self.trap_belief.prob_at(next_loc)
+            if trap_p > self.trap_hard:
+                continue
+            filtered.append((direction, movetype))
+        if filtered:
+            moves = filtered
 
         # 3. Score moves cheaply
         scored = []
