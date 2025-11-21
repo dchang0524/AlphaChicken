@@ -20,7 +20,6 @@ class PlayerAgent:
         self.trap_belief = TrapdoorBelief(self.map_size)
         self.known_traps: set[Tuple[int, int]] = set()
         self.spawn_pos: Tuple[int, int] = board.chicken_player.get_location()
-        self.isEvenChicken = board.chicken_player.even_chicken
 
         #anti repetition
         self.prev_pos: Tuple[int, int] | None = None
@@ -289,8 +288,7 @@ class PlayerAgent:
 
         # --- Opponent Voronoi over egg-eligible squares ---
         opp_voronoi = 0
-        blocks = 0
-        impossible_contest = 0
+
         for x in range(dim):
             for y in range(dim):
                 pos = (x, y)
@@ -309,13 +307,11 @@ class PlayerAgent:
 
                 # Can't reach -> irrelevant
                 if d_opp is None:
-                    blocks += 1
-                if d_me is None:
-                    impossible_contest += 1
+                    continue
 
                 # Opponent controls this Voronoi cell if they are strictly closer,
                 # or we can't reach at all.
-                if (d_me is None and d_opp is not None) or (d_opp is not None and d_opp <= d_me):
+                if d_me is None or d_opp < d_me:
                     opp_voronoi += 1
 
         # --- Wasted turd penalty (kept as a small sanity term) ---
@@ -370,87 +366,69 @@ class PlayerAgent:
         # self.debug_log(cur_board, score, phase)
 
         # Phase 3: finish mode (eggs prioritized)
-        potential_contest = opp_voronoi - impossible_contest
-        if moves_left <= ENDGAME_TURNS or potential_contest <= OPP_TIGHT:
+        if moves_left <= ENDGAME_TURNS or opp_voronoi <= OPP_TIGHT:
             # Opp is already strangled OR not many moves left:
             # prioritize egg difference hard.
-            print("ENDGAME")
             return (
                 100.0 * base_diff       # main term: egg count
                 - 1.0 * opp_voronoi   # small residual preference for keeping them cramped
             )
 
         # Phase 1: full positional Tal mode (opp still quite free, plenty of time)
-        if moves_left >= MIDGAME_TURNS and potential_contest >= OPP_LOOSE:
-            print("CRUSH")
+        if moves_left >= MIDGAME_TURNS and opp_voronoi >= OPP_LOOSE:
             return (
                 -6.0 * opp_voronoi    # primary: shrink their egg Voronoi
-                + 2 * blocks
                 + 1.0 * base_diff     # eggs matter a bit but not much
-                - 1.0 * len(cur_board.turds_player)
             )
 
         # Phase 2: mixed mode (conversion)
         # Default: neither clearly early nor clearly late, or moderately cramped opp.
         return (
-            print("MIX")
             -3.0 * opp_voronoi       # still care about killing their space
-            + 1.0 * blocks
             + 3.0 * base_diff        # but eggs are now equally important
         )
 
     def bfs_distances(self, cur_board: board.Board, start: tuple[int, int], for_me: bool) -> dict[tuple[int, int], int]:
-        dim = cur_board.game_map.MAP_SIZE
+        """
+        BFS over the board respecting movement constraints.
 
-        # 1. Identify who we are calculating this path for
-        # If for_me=True, we are looking at the board's current player.
-        # If for_me=False, we are looking at the board's current enemy.
-        target_chicken = cur_board.chicken_player if for_me else cur_board.chicken_enemy
-        
-        # 2. Am "I" (the intelligence running this code) the one moving in this BFS?
-        # We compare the target chicken's parity to our constant identity.
-        is_hero_moving = (target_chicken.even_chicken == self.isEvenChicken)
+        for_me = True  -> distances for our chicken
+        for_me = False -> distances for opponent chicken
+        """
+        dim = cur_board.game_map.MAP_SIZE
 
         eggs_p = cur_board.eggs_player
         eggs_e = cur_board.eggs_enemy
         turds_p = cur_board.turds_player
         turds_e = cur_board.turds_enemy
 
-        # 3. Set up blockers based on the POV of the BFS target
+        # Squares you simply cannot step on (anyone)
+        blocked = eggs_p | eggs_e | turds_p | turds_e
+
+        # Squares forbidden because they share an edge with *opponent* turds
+        # For us -> forbidden around opponent's turds
+        # For opponent -> forbidden around our turds
         if for_me:
-            # If calculating for the current turn-taker, they are blocked by THEIR enemy
-            blocked = set(eggs_e | turds_e)
             opp_turds = turds_e
         else:
-            # If calculating for the waiting player, they are blocked by the turn-taker
-            blocked = set(eggs_p | turds_p)
             opp_turds = turds_p
 
-        # 4. Known Traps (Objective Reality - Bad for everyone)
-        blocked |= self.known_traps
-
-        # 5. Probabilistic Traps (Subjective Belief - ONLY BAD FOR THE HERO)
-        # The opponent does not know what you know. Do not block their path with your fears.
-        if is_hero_moving:
-            for x in range(dim):
-                for y in range(dim):
-                    if self.trap_belief.prob_at((x, y)) >= self.trap_hard:
-                        blocked.add((x, y))
-
-        # 6. Turd Adjacency Logic
-        forbidden_adjacent = set()
+        forbidden_adjacent: set[tuple[int, int]] = set()
         for (tx, ty) in opp_turds:
             for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
                 nx, ny = tx + dx, ty + dy
                 if 0 <= nx < dim and 0 <= ny < dim:
                     forbidden_adjacent.add((nx, ny))
 
-        # Standard BFS Execution
+        # We also never step on the trapdoor squares themselves once known,
+        # but that's already encoded via board.turds if they place turds there.
+        # If you want, you can additionally block squares in board.found_trapdoors.
+
         dist: dict[tuple[int, int], int] = {}
         q = deque()
 
         if start in blocked or start in forbidden_adjacent:
-            return dist
+            return dist  # we are in a horrible position; everything is unreachable
 
         dist[start] = 0
         q.append(start)
@@ -464,20 +442,24 @@ class PlayerAgent:
                 if not (0 <= nx < dim and 0 <= ny < dim):
                     continue
                 pos = (nx, ny)
-                if pos in dist: continue
-                if pos in blocked: continue
-                if pos in forbidden_adjacent: continue
+                if pos in dist:
+                    continue
+                if pos in blocked:
+                    continue
+                if pos in forbidden_adjacent:
+                    continue
 
                 dist[pos] = d + 1
                 q.append(pos)
 
         return dist
 
+
     def order_moves(self, board: board.Board, moves, blocked_dir=None):
         cur_loc = board.chicken_player.get_location()
         dim = board.game_map.MAP_SIZE
         x, y = cur_loc
-        is_hero_turn = (board.chicken_player.even_chicken == self.isEvenChicken)
+
         opp_pos = board.chicken_enemy.get_location()
         dist_to_opp = self.manhattan(cur_loc, opp_pos)
 
@@ -526,7 +508,7 @@ class PlayerAgent:
             d_opp = opp_dist.get(pos)
             if d_opp is None:
                 continue
-            if d_me is None or d_opp <= d_me:
+            if d_me is None or d_opp < d_me:
                 adj_opp_voronoi += 1
 
         # ---------------------------------------------------------------------
@@ -546,42 +528,36 @@ class PlayerAgent:
         #     if non_backtracking:
         #         moves = non_backtracking
 
-        # 2. Remove moves stepping on KNOWN trapdoors (Non-negotiable)
-        safe_moves = []
+        # 2. Remove moves stepping on known / high-prob trapdoors
+        filtered: list[tuple[Direction, MoveType]] = []
         for direction, movetype in moves:
             next_loc = loc_after_direction(cur_loc, direction)
-            if next_loc not in self.known_traps:
-                safe_moves.append((direction, movetype))
 
-        # If we are surrounded by known traps, we have to die. 
-        # Just use whatever is valid (though it won't matter).
-        if not safe_moves:
-            # Keep 'moves' as is to return something, 
-            # though it will likely result in death.
-            pass 
-        else:
-            # 3. Try to filter out SUSPECTED trapdoors (Negotiable)
-            cautious_moves = []
-            if is_hero_turn:
-                for direction, movetype in safe_moves:
-                    next_loc = loc_after_direction(cur_loc, direction)
-                    trap_p = self.trap_belief.prob_at(next_loc)
-                    
-                    # Only keep if below threshold
-                    if trap_p <= self.trap_hard:
-                        cautious_moves.append((direction, movetype))
-            else:
-                # Opponent doesn't have our fears
-                cautious_moves = safe_moves
+            # Never step on discovered trapdoors
+            if next_loc in self.known_traps:
+                continue
 
-            # 4. Select the final list
-            # If we have cautious moves, use them.
-            # If being cautious leaves us with NOTHING, panic and use the 'safe_moves'.
-            # This ensures we risk a suspected trap rather than stepping on a KNOWN trap.
-            if cautious_moves:
-                moves = cautious_moves
-            else:
-                moves = safe_moves
+            # Block squares whose trapdoor probability is too high
+            trap_p = self.trap_belief.prob_at(next_loc)
+            if trap_p > self.trap_hard:
+                continue
+
+            filtered.append((direction, movetype))
+
+        if filtered:
+            moves = filtered
+        if not moves:
+            return []  # alpha-beta will see terminal
+
+        # 2.5 If NONE of our adjacent squares are in opponent's Voronoi,
+        #    don't play TURD moves (unless that would leave us with no moves).
+        if adj_opp_voronoi == 0 and is_corner:
+            non_turd = [mv for mv in moves if mv[1] != MoveType.TURD]
+            if non_turd:
+                moves = non_turd
+
+        if not moves:
+            return []  # safety, should basically never happen
 
         # 3. Score moves (phase-based, Tal logic)
         scored: list[tuple[float, float, tuple[Direction, MoveType]]] = []
@@ -702,9 +678,9 @@ class PlayerAgent:
         # Region definition
         def in_region(ix: int, iy: int) -> bool:
             if direction == Direction.UP:
-                return iy < my
-            elif direction == Direction.DOWN:
                 return iy > my
+            elif direction == Direction.DOWN:
+                return iy < my
             elif direction == Direction.RIGHT:
                 return ix > mx
             elif direction == Direction.LEFT:

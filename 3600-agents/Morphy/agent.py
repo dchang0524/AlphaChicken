@@ -58,8 +58,6 @@ class PlayerAgent:
         if not moves:
             return -INF
 
-        ordered = self.order_moves(board, moves, blocked_dir=None)
-
         alpha, beta = -INF, INF
         best_val = -INF
         best_move = None
