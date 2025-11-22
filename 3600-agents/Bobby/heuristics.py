@@ -47,7 +47,7 @@ def evaluate(self, cur_board: board_mod.Board, vor: VoronoiInfo) -> float:
         return space_term + mat_term + risk_term
 
 
-    def _my_entropy_penalty(
+def _my_entropy_penalty(
         self,
         cur_board: board_mod.Board,
         vor: VoronoiInfo,
