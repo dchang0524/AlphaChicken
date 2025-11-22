@@ -37,35 +37,20 @@ class TrapdoorManager:
         if len(self.spawns) > 0:
             print("ERROR: choose_spawns called twice")
         dim = self.game_map.MAP_SIZE
-        edge = np.random.randint(0, 4)
-        if edge == 0:
-            i = np.random.randint(1, dim - 1)
-            j = 0
-        elif edge == 1:
-            i = np.random.randint(1, dim - 1)
-            j = dim - 1
-        elif edge == 2:
-            i = 0
-            j = np.random.randint(1, dim - 1)
-        else:
-            i = dim - 1
-            j = np.random.randint(1, dim - 1)
 
-        # First is random even, second is antipodal
-        if (i + j) % 2 == 0:
-            even_spawn = (i, j)
+        # Not a corner
+        y1 = np.random.randint(1, dim - 1)
+        y2 = y1
 
-            if(edge <2):
-                odd_spawn = (i, dim - 1 - j)
-            else:
-                odd_spawn = (dim - 1 - i, j)
+        # Left edge or right
+        if y1 % 2 == 0:
+            x1 = 0
+            x2 = dim - 1
         else:
-            odd_spawn = (i, j)
-            if(edge <2):
-                even_spawn = (i, dim - 1 - j)
-            else:
-                even_spawn = (dim - 1 - i, j)
-        self.spawns = [even_spawn, odd_spawn]
+            x1 = dim - 1
+            x2 = 0
+
+        self.spawns = [(x1, y1), (x2, y2)]
 
         return self.spawns.copy()
 

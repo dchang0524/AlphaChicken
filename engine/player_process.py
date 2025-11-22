@@ -247,12 +247,15 @@ def run_player_process(
         module = importlib.import_module(player_name + ".agent")
     except ModuleNotFoundError:
         print(f"Error: The module {player_name} was not found.")
+        print(traceback.format_exc())
         return
     except ImportError as e:
         print(f"Error during import of {player_name}: {e}")
+        print(traceback.format_exc())
         return
     except Exception as e:
         print(f"An unexpected error occurred: {player_name}, {e}")
+        print(traceback.format_exc())
         return
 
     player = None

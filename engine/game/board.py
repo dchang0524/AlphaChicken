@@ -407,7 +407,7 @@ class Board:
 
         if not self.has_moves_left(enemy=True):
             if self.turns_left_enemy > 0:
-                self.chicken_player.increment_eggs_laid(2)
+                self.chicken_player.increment_eggs_laid(5)
                 self.chicken_blocked = True
 
         self.check_win()
@@ -446,7 +446,7 @@ class Board:
                 self.set_winner(Result.TIE, WinReason.TIMEOUT)
             else:
                 self.set_winner(Result.PLAYER, WinReason.TIMEOUT)
-        elif self.turns_left_player == 0 and self.turns_left_enemy == 0:
+        elif (self.turns_left_player == 0 and self.turns_left_enemy == 0) or self.turn_count >= 2 * self.MAX_TURNS:
             if self.chicken_player.get_eggs_laid() < self.chicken_enemy.get_eggs_laid():
                 self.set_winner(Result.ENEMY, WinReason.EGGS_LAID)
             elif (

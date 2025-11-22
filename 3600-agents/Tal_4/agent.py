@@ -27,12 +27,8 @@ class PlayerAgent:
         self.visited = [[False for _ in range(8)] for _ in range(8)]
 
         # Hyperparameters:
-        self.max_depth = 8     # typical; drop to 2 if time is low
-        self.trap_hard = 0.5   # hard “lava” threshold
-        self.trap_block = 15 # number of turns you should completely avoid trapdoors
-        self.trap_weight = 50 # soft risk penalty scale
-        self.look_radius = 3 #for heauristic evalutions
-        self.endgame = 8
+        self.max_depth = 7     # typical; drop to 2 if time is low
+        self.trap_hard = 0.4   # hard “lava” threshold
 
 
     def play(
@@ -41,9 +37,6 @@ class PlayerAgent:
         sensor_data: List[Tuple[bool, bool]],
         time_left: Callable,
     ):
-        x, y = board.chicken_player.get_location()
-        if 0 <= x < len(self.visited) and 0 <= y < len(self.visited[0]):
-            self.visited[x][y] = True
         # 1) Collapse beliefs on any trapdoors the engine has discovered
         found = board.found_trapdoors 
         new_traps = found - self.known_traps
@@ -57,37 +50,18 @@ class PlayerAgent:
         self.trap_belief.mark_safe(my_pos)
         self.trap_belief.mark_safe(board.chicken_enemy.get_location())
 
+        # 3) Record Current State
         moves = board.get_valid_moves()
-
-
-        # # --- CENTRALIZATION PHASE ---
-        # # If we are not yet in the center box, and it's still early in the game,
-        # # just play a centralizing move instead of full alpha-beta.
-        # if (not self.is_centralized(board)) and (board.turn_count <= self.centralize_turn_cap):
-        #     central_move = self.choose_centralize_move(board, moves)
-        #     self.prev_pos = my_pos
-        #     return central_move
+        self.state = board
+        self.dist_player = self.bfs_distances(board, board.chicken_player.get_location(), for_me=True)
+        self.dist_enemy = self.bfs_distances(board, board.chicken_enemy.get_location(), for_me=False)
 
         #Alpha-Beta Search for best move
         depth = self.choose_depth(board.player_time, board.turn_count)
         if not moves:
             return -INF
 
-        best_move = None
-        best_val = -INF
-
         ordered = self.order_moves(board, moves, blocked_dir=None)
-        # Root-level anti-backtracking using prev_pos
-        # if self.prev_pos is not None:
-        #     cur_loc = my_pos
-        #     filtered = []
-        #     for direction, movetype in ordered:
-        #         next_loc = loc_after_direction(cur_loc, direction)
-        #         if next_loc != self.prev_pos:
-        #             filtered.append((direction, movetype))
-        #     if filtered:
-        #         ordered = filtered
-
         alpha, beta = -INF, INF
         best_move = None
         best_val = -INF
@@ -121,11 +95,6 @@ class PlayerAgent:
         t = time_left
         #TODO: In the opening stage, don't waste too much time
         #TODO: Variable Depth, depending on how complex the position is
-        inc = 0
-        # if 40 - turn < self.endgame:
-        #     inc = 3
-        #if turn < 4:
-            #return 5
 
         # Emergency mode: barely any time left
         if t < 0.4:
@@ -163,13 +132,16 @@ class PlayerAgent:
         So:
         value(position for current player) = - value(position for opponent)
         """
+        #shared evaluation metrics
+        # --- Distances for both players (movement constraints respected) ---
+        my_pos  = board.chicken_player.get_location()
+        opp_pos = board.chicken_enemy.get_location()
+        my_dist  = self.bfs_distances(board, my_pos,  for_me=True)
+        opp_dist = self.bfs_distances(board, opp_pos, for_me=False)
 
         # Hard time cutoff
-        if time_left() < 0.05:
-            return self.evaluate(board)
-
-        if depth == 0:
-            return self.evaluate(board)
+        if time_left() < 0.05 or depth == 0:            
+            return self.evaluate(board, my_dist, opp_dist)
 
         moves = board.get_valid_moves()
         if not moves:
@@ -190,8 +162,7 @@ class PlayerAgent:
             # Negamax: opponent's best is our worst
             score = -self.negamax(child, depth - 1,
                                 -beta, -alpha,
-                                time_left,
-                                blocked_dir=None)
+                                time_left,)
 
             if score > best:
                 best = score
@@ -233,171 +204,140 @@ class PlayerAgent:
             case _: return d
 
 
-    def evaluate(self, cur_board: board.Board) -> float:
-
-        """
-        3-phase evaluation:
-
-        Phase 1 (early, open game):
-            - Primary: minimize opponent's egg Voronoi (opp_voronoi)
-            - Secondary: small weight on egg difference
-
-        Phase 2 (midgame / conversion):
-            - Mix: opp_voronoi and egg difference both matter
-
-        Phase 3 (late / finish):
-            - Primary: egg difference (greedy)
-            - Secondary: small leftover Voronoi term
-
-        Phase selection depends on BOTH:
-            - how many egg-eligible squares the opponent controls (opp_voronoi)
-            - how many turns are left in the game.
-
-        Trapdoors are NOT scored here; they are handled by move ordering.
-        """
+    def evaluate(self, cur_board: board.Board,
+             my_dist: dict[tuple[int,int], int],
+             opp_dist: dict[tuple[int,int], int]) -> float:
 
         dim = cur_board.game_map.MAP_SIZE
 
-        # --- Basic material ---
-        my_eggs  = cur_board.eggs_player
-        opp_eggs = cur_board.eggs_enemy
-        my_turds = cur_board.turds_player
-        opp_turds = cur_board.turds_enemy
-
-        base_me   = len(my_eggs)
-        base_opp  = len(opp_eggs)
-        base_diff = base_me - base_opp
-
-        # --- Positions ---
-        my_pos  = cur_board.chicken_player.get_location()
-        opp_pos = cur_board.chicken_enemy.get_location()
-
-        # --- Distances for both players (movement constraints respected) ---
-        my_dist  = self.bfs_distances(cur_board, my_pos,  for_me=True)
-        opp_dist = self.bfs_distances(cur_board, opp_pos, for_me=False)
-
-        eggs_p = my_eggs
-        eggs_e = opp_eggs
-        turds_p = my_turds
-        turds_e = opp_turds
-        occupied = eggs_p | eggs_e | turds_p | turds_e
-
-        # Parity: we infer from engine legality.
-        # (0,0) even, (0,1) odd. Opponent is the one who can lay on (0,1).
+        # Current parities
         my_even  = cur_board.can_lay_egg_at_loc((0, 0))
         opp_even = cur_board.can_lay_egg_at_loc((0, 1))
 
-        # --- Opponent Voronoi over egg-eligible squares ---
+        # Absolute metrics
+        my_score = 0
+        opp_score = 0
+
+        my_voronoi = 0
         opp_voronoi = 0
+
         blocks = 0
         impossible_contest = 0
+        contested = 0
+
+        turds = cur_board.turds_player | cur_board.turds_enemy
+        eggs_me = cur_board.eggs_player
+        eggs_opp = cur_board.eggs_enemy
+        occupied = eggs_me | eggs_opp | turds
+
+        # -------------------------------
+        # Scan board for absolute metrics
+        # -------------------------------
         for x in range(dim):
             for y in range(dim):
                 pos = (x, y)
 
-                if pos in occupied:
+                if pos in turds:
                     continue
 
-                even = ((x + y) % 2 == 0)
+                # MATERIAL SCORE
+                if pos in eggs_me:
+                    my_score += 1
+                    if pos in {(0,0),(0,dim-1),(dim-1,0),(dim-1,dim-1)}:
+                        my_score += 2
 
-                # Only care about squares where opponent could lay an egg
-                if even != opp_even:
-                    continue
+                if pos in eggs_opp:
+                    opp_score += 1
+                    if pos in {(0,0),(0,dim-1),(dim-1,0),(dim-1,dim-1)}:
+                        opp_score += 2
 
-                d_me  = my_dist.get(pos)
+                is_my_par = (((x+y) % 2 == 0) == my_even)
+                is_opp_par = (((x+y) % 2 == 0) == opp_even)
+
+                d_me = my_dist.get(pos)
                 d_opp = opp_dist.get(pos)
 
-                # Can't reach -> irrelevant
-                if d_opp is None:
-                    blocks += 1
-                if d_me is None:
-                    impossible_contest += 1
+                # ---------------------------
+                # Opponent Voronoi (absolute)
+                # ---------------------------
+                if is_opp_par:
+                    if pos in eggs_opp:
+                        opp_voronoi += 1
+                    else:
+                        if d_opp is not None:
+                            # opponent reaches first or reaches equally if I'm slower
+                            if d_me is None or d_opp <= d_me:
+                                opp_voronoi += 1
 
-                # Opponent controls this Voronoi cell if they are strictly closer,
-                # or we can't reach at all.
-                if (d_me is None and d_opp is not None) or (d_opp is not None and d_opp <= d_me):
-                    opp_voronoi += 1
+                            # contested squares
+                            if d_me is not None and abs(d_me - d_opp) <= 1:
+                                contested += 1
 
-        # --- Wasted turd penalty (kept as a small sanity term) ---
-        # WASTED_TURD_COST = 1.0
-        # wasted_turds = 0
+                            # I can no longer contest this
+                            if d_me is None:
+                                impossible_contest += 1
 
-        # for tx, ty in my_turds:
-        #     good_adj = False
-        #     for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-        #         nx, ny = tx + dx, ty + dy
-        #         if not (0 <= nx < dim and 0 <= ny < dim):
-        #             continue
-        #         pos = (nx, ny)
-        #         d_me  = my_dist.get(pos)
-        #         d_opp = opp_dist.get(pos)
+                            # blocks: opp used to reach but now cannot
+                            if d_opp is None:
+                                blocks += 1
 
-        #         # contested or opp-closer region -> turd is doing something
-        #         if d_opp is not None:
-        #             if d_me is None or d_opp <= d_me:
-        #                 good_adj = True
-        #                 break
+                # ---------------------------
+                # My Voronoi (absolute)
+                # ---------------------------
+                if is_my_par:
+                    if pos in eggs_me:
+                        my_voronoi += 1
+                    else:
+                        if d_me is not None:
+                            if d_opp is None or d_me < d_opp:
+                                my_voronoi += 1
 
-        #     if not good_adj:
-        #         wasted_turds += 1
-
-        # turd_penalty = WASTED_TURD_COST * wasted_turds
-
-        # --- Phase selection: depends on opp_voronoi AND turns left ---
+        # ---------------------------------------
+        # Phase selection (absolute-only version)
+        # ---------------------------------------
         moves_left = cur_board.MAX_TURNS - cur_board.turn_count
+        base_diff = my_score - opp_score
 
-        # Heuristic thresholds – tune if you want.
-        # On 8x8, opponent Voronoi ~ 0..30-ish for egg-eligible squares.
-        OPP_TIGHT = 10     # they are very constricted
-        OPP_LOOSE = 20     # they have a big region
+        OPP_TIGHT = 6
+        OPP_LOOSE = 16
+        ENDGAME_TURNS = 8
+        MIDGAME_TURNS = 16
 
-        ENDGAME_TURNS = 8   # few moves left → must convert
-        MIDGAME_TURNS = 16  # enough time left to still care a lot about space
-
-        # ---- Phase calculation (before return) ----
-        # Determine which phase we are in (string label for logging)
-        # if moves_left <= ENDGAME_TURNS or opp_voronoi <= OPP_TIGHT:
-        #     phase = "PHASE_3_FINISH"
-        #     score = 7.0 * base_diff - 1.0 * opp_voronoi
-        # elif moves_left >= MIDGAME_TURNS and opp_voronoi >= OPP_LOOSE:
-        #     phase = "PHASE_1_TAL"
-        #     score = -5.0 * opp_voronoi + 1.0 * base_diff
-        # else:
-        #     phase = "PHASE_2_CONVERT"
-        #     score = -3.0 * opp_voronoi + 3.0 * base_diff
-
-        # # Log the board + evaluation
-        # self.debug_log(cur_board, score, phase)
-
-        # Phase 3: finish mode (eggs prioritized)
+        # How much of their space is still contestable by me
         potential_contest = opp_voronoi - impossible_contest
+
+        # ==========================
+        # PHASE 3 — FINISH / GREEDY
+        # ==========================
         if moves_left <= ENDGAME_TURNS or potential_contest <= OPP_TIGHT:
-            # Opp is already strangled OR not many moves left:
-            # prioritize egg difference hard.
-            print("ENDGAME")
             return (
-                100.0 * base_diff       # main term: egg count
-                - 1.0 * opp_voronoi   # small residual preference for keeping them cramped
+                120.0 * base_diff
+                - 2.0 * opp_voronoi
             )
 
-        # Phase 1: full positional Tal mode (opp still quite free, plenty of time)
+        # ==========================
+        # PHASE 1 — SQUEEZE HARD
+        # ==========================
         if moves_left >= MIDGAME_TURNS and potential_contest >= OPP_LOOSE:
-            print("CRUSH")
             return (
-                -6.0 * opp_voronoi    # primary: shrink their egg Voronoi
-                + 2 * blocks
-                + 1.0 * base_diff     # eggs matter a bit but not much
-                - 1.0 * len(cur_board.turds_player)
+                -5.0 * opp_voronoi
+                + 2.0 * my_voronoi
+                + 2.0 * contested
+                + 2.0 * blocks
+                + 1.0 * base_diff
             )
 
-        # Phase 2: mixed mode (conversion)
-        # Default: neither clearly early nor clearly late, or moderately cramped opp.
+        # ==========================
+        # PHASE 2 — BALANCED
+        # ==========================
         return (
-            print("MIX")
-            -3.0 * opp_voronoi       # still care about killing their space
+            -3.0 * opp_voronoi
+            + 2.0 * my_voronoi
+            + 1.5 * base_diff
+            + 1.0 * contested
             + 1.0 * blocks
-            + 3.0 * base_diff        # but eggs are now equally important
         )
+
 
     def bfs_distances(self, cur_board: board.Board, start: tuple[int, int], for_me: bool) -> dict[tuple[int, int], int]:
         dim = cur_board.game_map.MAP_SIZE
@@ -472,6 +412,12 @@ class PlayerAgent:
                 q.append(pos)
 
         return dist
+
+
+
+
+
+
 
     def order_moves(self, board: board.Board, moves, blocked_dir=None):
         cur_loc = board.chicken_player.get_location()
@@ -819,6 +765,14 @@ class PlayerAgent:
             f.write(f"Eval Score: {score}\n\n")
             f.write(board_str)
             f.write("\n\n")
+            
+    def simple_log(self, turn : int, score : float, phase: str):
+        with open("tal_debug.log", "a") as f:
+            f.write("\n===============================\n")
+            f.write(f"Turn: {turn}\n")
+            f.write(f"Phase: {phase}\n")
+            f.write(f"Eval Score: {score}\n\n")
+            f.write("\n\n")
 
 
     def get_board_string(self, board: board.Board, trapdoors=None) -> str:
@@ -873,4 +827,4 @@ class PlayerAgent:
             main_list.append("\n")
 
         return "".join(main_list)
-
+    
