@@ -416,11 +416,13 @@ class PlayerAgent:
         if t < 5:
             base = 4
         elif t < 15:
-            base = 6
+            base = self.max_depth - 3
         elif t < 40:
-            base = 8
+            base = self.max_depth - 2
+        elif t < 180:
+            base = self.max_depth - 1
         else:
-            base = 10
+            base = self.max_depth
 
         # If position is closed (no contested), searching deeper is cheaper
         vor = self._get_voronoi(board)
