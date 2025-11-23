@@ -37,6 +37,7 @@ def analyze(
     opp_owned  = 0
     contested  = 0
     max_contested_dist = 0
+    min_contested_dist = dim * dim
 
     my_voronoi  = 0
     opp_voronoi = 0
@@ -46,6 +47,12 @@ def analyze(
     contested_right = 0
     contested_down = 0
     contested_left = 0
+
+    #Quadrant Fragmentation Score
+    contested_q1 = 0
+    contested_q2 = 0
+    contested_q3 = 0
+    contested_q4 = 0
 
     for x in range(dim):
         for y in range(dim):
@@ -84,6 +91,8 @@ def analyze(
                 # Depth of my frontier from my POV
                 if d_me > max_contested_dist:
                     max_contested_dist = d_me
+                elif d_me < min_contested_dist:
+                    min_contested_dist = d_me
 
                 # Direction assignment from my position
                 dx = x - my_x
@@ -102,6 +111,16 @@ def analyze(
                     contested_down += 1   # y increasing = DOWN
                 elif dy < 0:
                     contested_up += 1     # y decreasing = UP
+                
+                # Quadrant
+                if dx > 0 and dy < 0:
+                    contested_q1 += 1
+                elif dx < 0 and dy < 0:
+                    contested_q2 += 1
+                elif dx < 0 and dy > 0:
+                    contested_q3 += 1
+                elif dx > 0 and dy > 0:
+                    contested_q4 += 1
 
             # --------------------------
             # 3) Parity-based Voronoi (corner-weighted)
@@ -124,20 +143,68 @@ def analyze(
             if is_opp_par and owner[x][y] == OWNER_OPP:
                 opp_voronoi += weight
 
+    # 4) Directional fragmentation score in [0,1], based on contested_* counts
+    L = contested_left
+    R = contested_right
+    U = contested_up
+    D = contested_down
+
+    counts = [L, R, U, D]
+    total = sum(counts)
+
+    if total <= 1:
+        cardinal_frag = 0.0
+    else:
+        # How many directions actually have contested squares?
+        dir_count = sum(1 for c in counts if c > 0)
+        # Normalize: 1 direction → 0, 4 directions → 1
+        dir_score = (dir_count - 1) / 3.0  # ∈ [0,1]
+
+        # How evenly is the frontier spread?
+        major_fraction = max(counts) / total  # ∈ (0,1]
+        spread_score = 1.0 - major_fraction   # ∈ [0,1), 0 when all in one dir
+
+        # Opposite-direction bonus: L+R or U+D both active → more fragmentation.
+        opp_bonus = 0.0
+        if L > 0 and R > 0:
+            opp_bonus += 0.5
+        if U > 0 and D > 0:
+            opp_bonus += 0.5
+        opp_score = min(1.0, opp_bonus)  # 0, 0.5, or 1.0
+
+        cardinal_frag = (
+            0.4 * spread_score +   # how evenly spread
+            0.2 * dir_score   +    # how many directions
+            0.4 * opp_score        # opposite sides involved
+        )
+        # Clamp
+        if cardinal_frag < 0.0:
+            cardinal_frag = 0.0
+        elif cardinal_frag > 1.0:
+            cardinal_frag = 1.0
+
+        quad_counts = [contested_q1, contested_q2, contested_q3, contested_q4]
+        quad_dirs = sum(1 for c in quad_counts if c > 0)
+        quad_spread = 1.0 - (max(quad_counts) / total) if total > 0 else 0.0
+        quad_score = 0.5 * quad_spread + 0.5 * ((quad_dirs - 1) / 3.0)
+        frag_score = 0.5 * cardinal_frag + 0.5 * quad_score
+
     return VoronoiInfo(
-        #dist_me            = dist_me,
-        #dist_opp           = dist_opp,
+        dist_me            = dist_me,
+        dist_opp           = dist_opp,
         owner              = owner,
         my_owned           = my_owned,
         opp_owned          = opp_owned,
         contested          = contested,
         max_contested_dist = max_contested_dist,
+        min_contested_dist = min_contested_dist,
         my_voronoi         = my_voronoi,
         opp_voronoi        = opp_voronoi,
         contested_up       = contested_up,
         contested_right    = contested_right,
         contested_down     = contested_down,
         contested_left     = contested_left,
+        frag_score   = frag_score,
     )
 
 
@@ -166,6 +233,9 @@ class VoronoiInfo:
       - contested_right : how many contested squares lie primarily "right" of me
       - contested_down  : how many contested squares lie primarily "below" me
       - contested_left  : how many contested squares lie primarily "left" of me
+
+      - frag_directional: fragmentation score in [0,1] based on the distribution
+                          of contested squares across directions.
     """
 
     __slots__ = (
@@ -176,6 +246,7 @@ class VoronoiInfo:
         "opp_owned",
         "contested",
         "max_contested_dist",
+        "min_contested_dist",
         "my_voronoi",
         "opp_voronoi",
         "vor_score",
@@ -183,6 +254,7 @@ class VoronoiInfo:
         "contested_right",
         "contested_down",
         "contested_left",
+        "frag_score",
     )
 
     def __init__(
@@ -194,12 +266,14 @@ class VoronoiInfo:
         opp_owned,
         contested,
         max_contested_dist,
+        min_contested_dist,
         my_voronoi,
         opp_voronoi,
         contested_up,
         contested_right,
         contested_down,
         contested_left,
+        frag_score,
     ):
         self.dist_me            = dist_me
         self.dist_opp           = dist_opp
@@ -208,6 +282,7 @@ class VoronoiInfo:
         self.opp_owned          = opp_owned
         self.contested          = contested
         self.max_contested_dist = max_contested_dist
+        self.min_contested_dist = min_contested_dist
 
         self.my_voronoi  = my_voronoi
         self.opp_voronoi = opp_voronoi
@@ -218,4 +293,5 @@ class VoronoiInfo:
         self.contested_down  = contested_down
         self.contested_left  = contested_left
 
+        self.frag_score = frag_score
 
