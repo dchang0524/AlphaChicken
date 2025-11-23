@@ -6,9 +6,9 @@ from .voronoi import VoronoiInfo, OWNER_ME, OWNER_OPP  # adjust import path as n
 from .hiddenMarkov import TrapdoorBelief
 from game.enums import Direction, MoveType  # type: ignore
 
+INF = 10 ** 8
 
-
-def evaluate(self, cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : TrapdoorBelief) -> float:
+def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : TrapdoorBelief) -> float:
     """
     Bobby's scalar evaluation.
     Always from *my* POV (current chicken_player), regardless of depth.
@@ -21,6 +21,15 @@ def evaluate(self, cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
       - frontier_term:  penalty for being far from your frontier (max distance)
       - frontier_bonus: small bonus for having some frontier when the game is open
     """
+    if cur_board.is_game_over():
+        my_eggs  = cur_board.chicken_player.eggs_laid
+        opp_eggs = cur_board.chicken_enemy.eggs_laid
+        if my_eggs > opp_eggs:
+            return INF
+        elif my_eggs < opp_eggs:
+            return -INF
+        else:
+            return 0
 
     dim = cur_board.game_map.MAP_SIZE
 
@@ -92,7 +101,7 @@ def evaluate(self, cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
             if owner == OWNER_ME:
                 my_trap_mass += p
             elif owner == OWNER_OPP:
-                opp_mass += p
+                opp_trap_mass += p
 
     # Positive = worse for me (more trap mass in my region)
     risk_feature = my_trap_mass - opp_trap_mass
@@ -192,7 +201,7 @@ def move_order(
 
     center = (dim // 2, dim // 2)
 
-    my_pos  = cur_board.chicken_player.location
+    my_pos  = cur_board.chicken_player.get_location()
 
     my_center_dist  = manhattan(my_pos, center)
 

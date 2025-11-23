@@ -111,3 +111,12 @@ def zobrist_hash(
     h ^= _ZOBRIST_SIDE_TO_MOVE
 
     return h
+
+class TTEntry:
+    __slots__ = ("value", "depth", "flag", "best_move")
+
+    def __init__(self, value: float, depth: int, flag: str, best_move):
+        self.value = value
+        self.depth = depth
+        self.flag = flag     # "EXACT" / "LOWER" / "UPPER"
+        self.best_move = best_move

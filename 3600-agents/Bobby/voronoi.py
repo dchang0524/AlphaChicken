@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Tuple, Set
 from game import board as board_mod  # type: ignore
 
-from bfs_utils import bfs_distances_both  # assumes you defined this in bfs_utils.py
+from .bfs_utils import bfs_distances_both  # assumes you defined this in bfs_utils.py
 
 OWNER_NONE = 0
 OWNER_ME   = 1  # current player (board.chicken_player)
@@ -183,11 +183,11 @@ def analyze(
         elif cardinal_frag > 1.0:
             cardinal_frag = 1.0
 
-        quad_counts = [contested_q1, contested_q2, contested_q3, contested_q4]
-        quad_dirs = sum(1 for c in quad_counts if c > 0)
-        quad_spread = 1.0 - (max(quad_counts) / total) if total > 0 else 0.0
-        quad_score = 0.5 * quad_spread + 0.5 * ((quad_dirs - 1) / 3.0)
-        frag_score = 0.5 * cardinal_frag + 0.5 * quad_score
+    quad_counts = [contested_q1, contested_q2, contested_q3, contested_q4]
+    quad_dirs = sum(1 for c in quad_counts if c > 0)
+    quad_spread = 1.0 - (max(quad_counts) / total) if total > 0 else 0.0
+    quad_score = 0.5 * quad_spread + 0.5 * ((quad_dirs - 1) / 3.0)
+    frag_score = 0.5 * cardinal_frag + 0.5 * quad_score
 
     return VoronoiInfo(
         dist_me            = dist_me,
