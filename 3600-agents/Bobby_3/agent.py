@@ -84,10 +84,12 @@ class PlayerAgent:
         self._update_trap_knowledge_state(board)
 
         # 4) Extract probabilistic trap candidates for expectimax
-        self._update_potential_traps(board, threshold=0.40)
+        self._update_potential_traps(board, threshold=0.35)
 
         # 5) New root: bump generation if traps are still uncertain
         if not self.traps_fully_known:
+            self.search_gen += 1
+        if board.turn_count % 10 == 0:
             self.search_gen += 1
         # If traps_fully_known, search_gen stays fixed and TT persists across turns
 
@@ -138,7 +140,7 @@ class PlayerAgent:
         # On first transition to "fully known", old TT entries are suspect
         # (they were computed under moving beliefs), so clear once.
         if self.traps_fully_known and not prev:
-            self.tt.clear()
+            self.search_gen += 1
 
     # ------------------------------------------------------------------
     # Potential trap candidates (for expectimax)
