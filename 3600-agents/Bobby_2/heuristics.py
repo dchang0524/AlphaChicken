@@ -59,16 +59,16 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
     # --- Weights in egg units (tunable) ---
 
     # Space: important when open, but never completely zero.
-    W_SPACE_MIN = 0.5   # closed
-    W_SPACE_MAX = 15.0   # very open
+    W_SPACE_MIN = 5   # closed
+    W_SPACE_MAX = 25.0   # very open
 
     # Material: always matters, but ramps up hard toward the end.
     W_MAT_MIN   = 5.0   # early
     W_MAT_MAX   = 25.0  # late
 
-    # Trap risk: matters most when the board is open and mobility is high.
-    W_RISK_MIN  = 0.5
-    W_RISK_MAX  = 3.0
+    # # Trap risk: matters most when the board is open and mobility is high.
+    # W_RISK_MIN  = 0.5
+    # W_RISK_MAX  = 3.0
 
     # Fragmentation: how bad it is if contested squares are spatially split.
     # Assumes vor.frag_score ∈ [0,1]
@@ -84,28 +84,28 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
     # Interpolate weights
     w_space = W_SPACE_MIN + openness * (W_SPACE_MAX - W_SPACE_MIN)
     w_mat   = W_MAT_MIN   + (1.0 - phase_mat) * (W_MAT_MAX - W_MAT_MIN)
-    w_risk  = W_RISK_MIN  + openness * (W_RISK_MAX - W_RISK_MIN)
+    # w_risk  = W_RISK_MIN  + openness * (W_RISK_MAX - W_RISK_MIN)
 
 
 
-    my_trap_mass = 0.0
-    opp_trap_mass = 0.0
-    # Partition trap probabilities by Voronoi ownership
-    for x in range(dim):
-        for y in range(dim):
-            p = trap_belief.prob_at((x, y))
-            if p <= 0.0:
-                continue
+    # my_trap_mass = 0.0
+    # opp_trap_mass = 0.0
+    # # Partition trap probabilities by Voronoi ownership
+    # for x in range(dim):
+    #     for y in range(dim):
+    #         p = trap_belief.prob_at((x, y))
+    #         if p <= 0.0:
+    #             continue
 
-            owner = vor.owner[x][y]
-            if owner == OWNER_ME:
-                my_trap_mass += p
-            elif owner == OWNER_OPP:
-                opp_trap_mass += p
+    #         owner = vor.owner[x][y]
+    #         if owner == OWNER_ME:
+    #             my_trap_mass += p
+    #         elif owner == OWNER_OPP:
+    #             opp_trap_mass += p
 
-    # Positive = worse for me (more trap mass in my region)
-    risk_feature = my_trap_mass - opp_trap_mass
-    risk_term    = -w_risk * risk_feature
+    # # Positive = worse for me (more trap mass in my region)
+    # risk_feature = my_trap_mass - opp_trap_mass
+    # risk_term    = -w_risk * risk_feature
 
     # --- Fragmentation & frontier geometry ---
 
@@ -127,7 +127,7 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
     space_term = w_space * space_score
     mat_term   = w_mat   * mat_diff
 
-    return space_term + mat_term + risk_term + frag_term + frontier_dist_term
+    return space_term + mat_term + frag_term + frontier_dist_term
 
 Move = Tuple[Direction, MoveType]
 

@@ -113,10 +113,11 @@ def zobrist_hash(
     return h
 
 class TTEntry:
-    __slots__ = ("value", "depth", "flag", "best_move")
+    __slots__ = ("value", "depth", "flag", "best_move", "gen")
 
-    def __init__(self, value: float, depth: int, flag: str, best_move):
+    def __init__(self, value: float, depth: int, flag: str, best_move, gen: int):
         self.value = value
         self.depth = depth
         self.flag = flag     # "EXACT" / "LOWER" / "UPPER"
         self.best_move = best_move
+        self.gen = gen
