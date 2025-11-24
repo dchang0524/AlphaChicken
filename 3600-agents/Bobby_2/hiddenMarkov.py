@@ -288,3 +288,29 @@ class TrapdoorBelief:
     def get_maps(self) -> Tuple[Dict[Tuple[int, int], float], Dict[Tuple[int, int], float]]:
         """Optional helper: return full belief maps (for debugging / heatmaps)."""
         return self.p_even, self.p_odd
+    
+    def debug_print(self, precision: int = 3) -> None:
+        """
+        Print an 8x8 (or map_size x map_size) grid of trapdoor probabilities.
+        Each cell shows the probability that THAT cell is the trapdoor of its parity.
+        """
+        dim = self.map_size
+        fmt = "{:>" + str(precision + 3) + "." + str(precision) + "f}"
+        
+        print("\n=== Trapdoor Belief Debug Print ===")
+        print("Format: probability that this exact square is the trapdoor\n")
+
+        for y in range(dim):
+            row_str = []
+            for x in range(dim):
+                pos = (x, y)
+                p = self.prob_at(pos)
+
+                # If pos was never in the support (e.g., outside allowed region) → blank.
+                if p == 0.0 and pos not in self.p_even and pos not in self.p_odd:
+                    row_str.append("   --  ")
+                else:
+                    row_str.append(fmt.format(p))
+            print(" ".join(row_str))
+        print()
+

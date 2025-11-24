@@ -119,5 +119,4 @@ class TTEntry:
         self.value = value
         self.depth = depth
         self.flag = flag     # "EXACT" / "LOWER" / "UPPER"
-        self.best_move = best_move
-        self.gen = gen
+        self.best_
