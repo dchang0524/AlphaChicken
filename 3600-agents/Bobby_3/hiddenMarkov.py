@@ -1,178 +1,139 @@
 from __future__ import annotations
-from typing import Dict, List, Tuple
-
-#TODO: Change to numpy for speed up
-
+from typing import Dict, List, Tuple, Optional
+import numpy as np
 
 # ----------------------------------------------------------------------
-# Sensor kernels (from the spec figure)
+# Sensor kernels
 # ----------------------------------------------------------------------
 
-# prob_hear: 5x5 kernel around the trapdoor.
 # Coordinates are (dx, dy) = (player_x - trap_x, player_y - trap_y).
+# We interpret this as: if player is at P, a trap at T = P - (dx, dy) contributes probability p.
 PROB_HEAR_KERNEL: Dict[Tuple[int, int], float] = {
     (-2, -2): 0.00, (-1, -2): 0.10, (0, -2): 0.10, (1, -2): 0.10, (2, -2): 0.00,
     (-2, -1): 0.10, (-1, -1): 0.25, (0, -1): 0.50, (1, -1): 0.25, (2, -1): 0.10,
-    (-2,  0): 0.10, (-1,  0): 0.50, (0,  0): 0, (1,  0): 0.50, (2,  0): 0.10,
+    (-2,  0): 0.10, (-1,  0): 0.50, (0,  0): 0.00, (1,  0): 0.50, (2,  0): 0.10,
     (-2,  1): 0.10, (-1,  1): 0.25, (0,  1): 0.50, (1,  1): 0.25, (2,  1): 0.10,
     (-2,  2): 0.00, (-1,  2): 0.10, (0,  2): 0.10, (1,  2): 0.10, (2,  2): 0.00,
 }
 
-# prob_feel: 3x3 kernel around the trapdoor.
 PROB_FEEL_KERNEL: Dict[Tuple[int, int], float] = {
     (-1, -1): 0.15, (0, -1): 0.30, (1, -1): 0.15,
-    (-1,  0): 0.30, (0,  0): 0, (1,  0): 0.30,
+    (-1,  0): 0.30, (0,  0): 0.00, (1,  0): 0.30,
     (-1,  1): 0.15, (0,  1): 0.30, (1,  1): 0.15,
 }
 
-
 class TrapdoorBelief:
     """
-    Exact Bayesian belief over the two trapdoors.
+    Exact Bayesian belief over the two trapdoors using NumPy for vectorization.
 
     Hidden state:
         T_e ∈ {even squares}
         T_o ∈ {odd  squares}
 
-    We maintain:
-        p_even[s] = P(T_e = s | history)
-        p_odd[s]  = P(T_o = s | history)
-
-    Each turn we observe:
-        sensor_data[0] = (heard_even, felt_even)
-        sensor_data[1] = (heard_odd,  felt_odd)
-
-    and update each parity independently using Bayes.
-    Complexity per update: O(#board_squares).
+    We maintain two NxN grids:
+        self.p_even[x, y]
+        self.p_odd[x, y]
     """
 
     def __init__(self, map_size: int):
         self.map_size = map_size
-
-        # Partition board into even/odd squares by parity of x+y
-        self.even_squares: List[Tuple[int, int]] = []
-        self.odd_squares: List[Tuple[int, int]] = []
-
+        
+        # Pre-compute masks for valid even/odd squares
+        self.mask_even = np.zeros((map_size, map_size), dtype=bool)
+        self.mask_odd = np.zeros((map_size, map_size), dtype=bool)
+        
         for x in range(map_size):
             for y in range(map_size):
                 if (x + y) % 2 == 0:
-                    self.even_squares.append((x, y))
+                    self.mask_even[x, y] = True
                 else:
-                    self.odd_squares.append((x, y))
+                    self.mask_odd[x, y] = True
 
-        self.collapsed_known_traps: set[Tuple[int, int]] = set()
-
+        # Initialize beliefs
+        self.p_even = np.zeros((map_size, map_size), dtype=float)
+        self.p_odd  = np.zeros((map_size, map_size), dtype=float)
+        
         self._init_prob()
-
-    # ------------------------------------------------------------------
-    # Initialization / reset
-    # ------------------------------------------------------------------
 
     def _init_prob(self) -> None:
         """Reset beliefs to match the trapdoor sampling distribution."""
-
         dim = self.map_size
+        
+        # Create a weights grid based on the rules
+        # Edge (0) -> w=0
+        # Inside edge (1) -> w=0
+        # Ring 2 (2) -> w=1
+        # Inner core (3+) -> w=2
+        weights = np.zeros((dim, dim), dtype=float)
+        
+        # Fill weights based on "rings" from the edge
+        # We can just iterate or slice. Slicing is cleaner.
+        # Initialize ring 2 (indices 2 to dim-3 inclusive) with 1.0
+        if dim >= 6:
+            weights[2:dim-2, 2:dim-2] = 1.0
+        
+        # Initialize inner core (indices 3 to dim-4 inclusive) with 2.0
+        if dim >= 8:
+            weights[3:dim-3, 3:dim-3] = 2.0
 
-        weights_even: Dict[Tuple[int, int], float] = {}
-        weights_odd: Dict[Tuple[int, int], float] = {}
-
-        for x in range(dim):
-            for y in range(dim):
-                # Compute the same weight pattern as in TrapdoorManager.choose_trapdoors
-                w = 0.0
-
-                # Outer allowed region: [2 : dim-2] in both axes => weight 1
-                if 2 <= x < dim - 2 and 2 <= y < dim - 2:
-                    w = 1.0
-
-                # Inner region: [3 : dim-3] => override with weight 2
-                if 3 <= x < dim - 3 and 3 <= y < dim - 3:
-                    w = 2.0
-
-                if w == 0.0:
-                    # These squares never get a trapdoor in the generator, so prior should be 0.
-                    continue
-
-                if (x + y) % 2 == 0:
-                    weights_even[(x, y)] = w
-                else:
-                    weights_odd[(x, y)] = w
-
-        # Normalize per parity
-        sum_even = sum(weights_even.values())
-        sum_odd = sum(weights_odd.values())
-
+        # Apply to Even
+        self.p_even = weights * self.mask_even
+        sum_even = np.sum(self.p_even)
         if sum_even > 0:
-            self.p_even = {pos: w / sum_even for pos, w in weights_even.items()}
-        else:
-            self.p_even = {}
+            self.p_even /= sum_even
 
+        # Apply to Odd
+        self.p_odd = weights * self.mask_odd
+        sum_odd = np.sum(self.p_odd)
         if sum_odd > 0:
-            self.p_odd = {pos: w / sum_odd for pos, w in weights_odd.items()}
-        else:
-            self.p_odd = {}
-
+            self.p_odd /= sum_odd
 
     def reset(self) -> None:
-        """Public reset, if you ever replay a game with the same agent."""
-        self._init_uniform()
+        self._init_prob()
 
     # ------------------------------------------------------------------
     # Core update (Bayes filter)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _likelihood_for_square(
-        trap_pos: Tuple[int, int],
-        player_pos: Tuple[int, int],
-        heard: bool,
-        felt: bool,
-    ) -> float:
+    def _get_likelihood_grid(
+        self, 
+        player_pos: Tuple[int, int], 
+        kernel: Dict[Tuple[int, int], float], 
+        sensed: bool
+    ) -> np.ndarray:
         """
-        Compute P(heard, felt | trap at trap_pos, player at player_pos)
-        using the prob_hear / prob_feel kernels and dx, dy offsets.
+        Constructs a likelihood grid for the entire board based on one sensor reading.
+        
+        If sensed=True (Heard/Felt):
+           L(trap_pos) = P(sensed | trap_pos) = kernel_value
+        If sensed=False (Not Heard/Not Felt):
+           L(trap_pos) = 1 - P(sensed | trap_pos) = 1 - kernel_value
         """
-        dx = player_pos[0] - trap_pos[0]
-        dy = player_pos[1] - trap_pos[1]
+        dim = self.map_size
+        px, py = player_pos
+        
+        # Start with default likelihood
+        # If we heard something, default likelihood for squares outside kernel is 0.
+        # If we didn't hear, default likelihood for squares outside kernel is 1.
+        if sensed:
+            L = np.zeros((dim, dim), dtype=float)
+        else:
+            L = np.ones((dim, dim), dtype=float)
 
-        ph = PROB_HEAR_KERNEL.get((dx, dy), 0.0)
-        pf = PROB_FEEL_KERNEL.get((dx, dy), 0.0)
-
-        lh = ph if heard else (1.0 - ph)
-        lf = pf if felt else (1.0 - pf)
-
-        return lh * lf
-
-    @staticmethod
-    def _bayes_update_map(
-        prior: Dict[Tuple[int, int], float],
-        player_pos: Tuple[int, int],
-        heard: bool,
-        felt: bool,
-    ) -> Dict[Tuple[int, int], float]:
-        """
-        One Bayes step for a single parity:
-            posterior(s) ∝ prior(s) * P(obs | trap = s)
-        """
-        posterior: Dict[Tuple[int, int], float] = {}
-
-        for pos, p_old in prior.items():
-            L = TrapdoorBelief._likelihood_for_square(pos, player_pos, heard, felt)
-            posterior[pos] = p_old * L
-
-        Z = sum(posterior.values())
-        if Z <= 0.0:
-            # Degenerate case: fall back to uniform over the same support.
-            n = len(posterior)
-            if n == 0:
-                return posterior
-            u = 1.0 / n
-            return {pos: u for pos in posterior}
-
-        for pos in posterior:
-            posterior[pos] /= Z
-
-        return posterior
+        # Apply kernel
+        # dx = px - tx  => tx = px - dx
+        # dy = py - ty  => ty = py - dy
+        for (dx, dy), p_val in kernel.items():
+            tx, ty = px - dx, py - dy
+            
+            # Check bounds
+            if 0 <= tx < dim and 0 <= ty < dim:
+                if sensed:
+                    L[tx, ty] = p_val
+                else:
+                    L[tx, ty] = 1.0 - p_val
+                    
+        return L
 
     def update(
         self,
@@ -181,136 +142,125 @@ class TrapdoorBelief:
     ) -> None:
         """
         Update beliefs given current player position and latest senses.
-
         sensor_data[0] = (heard_even, felt_even)
         sensor_data[1] = (heard_odd,  felt_odd)
         """
         (heard_e, felt_e), (heard_o, felt_o) = sensor_data
 
-        # Even trap
-        self.p_even = self._bayes_update_map(
-            self.p_even, player_pos, heard_e, felt_e
-        )
-
-        # Odd trap
-        self.p_odd = self._bayes_update_map(
-            self.p_odd, player_pos, heard_o, felt_o
-        )
-
-    def _zero_and_renorm(self, pos: Tuple[int, int]) -> None:
-        """
-        Internal helper:
-        - Set probability of `pos` to 0 in the appropriate parity map.
-        - Renormalize that map so probabilities still sum to 1
-          (condition on "trap is not here").
-        """
-        # Select parity map
-        if (pos[0] + pos[1]) % 2 == 0:
-            pmap = self.p_even
+        # --- EVEN UPDATE ---
+        L_hear_e = self._get_likelihood_grid(player_pos, PROB_HEAR_KERNEL, heard_e)
+        L_feel_e = self._get_likelihood_grid(player_pos, PROB_FEEL_KERNEL, felt_e)
+        
+        # Posterior = Prior * Likelihood * Likelihood
+        self.p_even *= L_hear_e
+        self.p_even *= L_feel_e
+        
+        # Normalize
+        total_e = np.sum(self.p_even)
+        if total_e > 0:
+            self.p_even /= total_e
         else:
-            pmap = self.p_odd
+            # Degenerate case (shouldn't happen with valid logic), reset to uniform over valid mask
+            self.p_even = self.mask_even.astype(float)
+            self.p_even /= np.sum(self.p_even)
 
-        if pos not in pmap:
-            return  # already impossible or outside support
-
-        old = pmap.pop(pos)
-        remaining_mass = 1.0 - old
-
-        if remaining_mass <= 0.0 or not pmap:
-            # Degenerate (should not really happen unless we've
-            # eliminated every possible square); in that case,
-            # leave as-is or re-init prior if you prefer.
-            return
-
-        # Renormalize
-        for k in pmap:
-            pmap[k] /= remaining_mass
+        # --- ODD UPDATE ---
+        L_hear_o = self._get_likelihood_grid(player_pos, PROB_HEAR_KERNEL, heard_o)
+        L_feel_o = self._get_likelihood_grid(player_pos, PROB_FEEL_KERNEL, felt_o)
+        
+        self.p_odd *= L_hear_o
+        self.p_odd *= L_feel_o
+        
+        # Normalize
+        total_o = np.sum(self.p_odd)
+        if total_o > 0:
+            self.p_odd /= total_o
+        else:
+            self.p_odd = self.mask_odd.astype(float)
+            self.p_odd /= np.sum(self.p_odd)
 
     def mark_safe(self, pos: Tuple[int, int]) -> None:
         """
-        Incorporate the fact that `pos` has been stepped on by *someone*
-        without triggering a trap. Hence, it CANNOT be the trapdoor.
+        Set probability of `pos` to 0 (we stepped there and didn't die).
+        Renormalize.
         """
-        self._zero_and_renorm(pos)
+        x, y = pos
+        if not (0 <= x < self.map_size and 0 <= y < self.map_size):
+            return
+
+        if (x + y) % 2 == 0:
+            self.p_even[x, y] = 0.0
+            s = np.sum(self.p_even)
+            if s > 0: self.p_even /= s
+        else:
+            self.p_odd[x, y] = 0.0
+            s = np.sum(self.p_odd)
+            if s > 0: self.p_odd /= s
 
     def mark_safes(self, positions: List[Tuple[int, int]]) -> None:
-        """
-        Batch version for convenience.
-        """
         for pos in positions:
             self.mark_safe(pos)
 
+    def set_trapdoor(self, pos: Tuple[int, int]) -> None:
+        """
+        Collapse belief: we know the trap is exactly at `pos`.
+        """
+        x, y = pos
+        if (x + y) % 2 == 0:
+            self.p_even.fill(0.0)
+            self.p_even[x, y] = 1.0
+        else:
+            self.p_odd.fill(0.0)
+            self.p_odd[x, y] = 1.0
 
     # ------------------------------------------------------------------
     # Query interface
     # ------------------------------------------------------------------
 
     def prob_at(self, pos: Tuple[int, int]) -> float:
-        """
-        Return P("this square is the trapdoor of its parity").
-
-        This is what you feed into your evaluation:
-            - big penalty if prob_at(pos) is high
-            - discount potential eggs behind high-prob squares
-        """
-        if (pos[0] + pos[1]) % 2 == 0:
-            return self.p_even.get(pos, 0.0)
+        x, y = pos
+        if not (0 <= x < self.map_size and 0 <= y < self.map_size):
+            return 0.0
+        if (x + y) % 2 == 0:
+            return float(self.p_even[x, y])
         else:
-            return self.p_odd.get(pos, 0.0)
+            return float(self.p_odd[x, y])
 
     def most_likely_even(self) -> Tuple[Tuple[int, int], float] | None:
-        if not self.p_even:
-            return None
-        pos = max(self.p_even, key=self.p_even.get)
-        return pos, self.p_even[pos]
+        # np.argmax returns flat index, unravel to get (x,y)
+        flat_idx = np.argmax(self.p_even)
+        idx = np.unravel_index(flat_idx, self.p_even.shape)
+        p = self.p_even[idx]
+        if p == 0: return None
+        return (int(idx[0]), int(idx[1])), float(p)
 
     def most_likely_odd(self) -> Tuple[Tuple[int, int], float] | None:
-        if not self.p_odd:
-            return None
-        pos = max(self.p_odd, key=self.p_odd.get)
-        return pos, self.p_odd[pos]
-    
-    def set_trapdoor(self, pos: Tuple[int, int]) -> None:
-        """
-        Collapse the belief: we *know* there is a trapdoor at `pos`.
-
-        If pos is even parity, that's the even trap.
-        If pos is odd parity, that's the odd trap.
-        """
-        if (pos[0] + pos[1]) % 2 == 0:
-            # Even trapdoor
-            self.p_even = {pos: 1.0}
-        else:
-            # Odd trapdoor
-            self.p_odd = {pos: 1.0}
-
+        flat_idx = np.argmax(self.p_odd)
+        idx = np.unravel_index(flat_idx, self.p_odd.shape)
+        p = self.p_odd[idx]
+        if p == 0: return None
+        return (int(idx[0]), int(idx[1])), float(p)
 
     def get_maps(self) -> Tuple[Dict[Tuple[int, int], float], Dict[Tuple[int, int], float]]:
-        """Optional helper: return full belief maps (for debugging / heatmaps)."""
-        return self.p_even, self.p_odd
-    
+        """
+        Compatibility layer: converts numpy arrays back to dicts if other code needs it.
+        Ideally, you update other code to use numpy arrays directly.
+        """
+        d_even = {}
+        d_odd = {}
+        rows, cols = np.nonzero(self.p_even)
+        for r, c in zip(rows, cols):
+            d_even[(r, c)] = float(self.p_even[r, c])
+            
+        rows, cols = np.nonzero(self.p_odd)
+        for r, c in zip(rows, cols):
+            d_odd[(r, c)] = float(self.p_odd[r, c])
+            
+        return d_even, d_odd
+
     def debug_print(self, precision: int = 3) -> None:
-        """
-        Print an 8x8 (or map_size x map_size) grid of trapdoor probabilities.
-        Each cell shows the probability that THAT cell is the trapdoor of its parity.
-        """
-        dim = self.map_size
-        fmt = "{:>" + str(precision + 3) + "." + str(precision) + "f}"
-        
-        print("\n=== Trapdoor Belief Debug Print ===")
-        print("Format: probability that this exact square is the trapdoor\n")
-
-        for y in range(dim):
-            row_str = []
-            for x in range(dim):
-                pos = (x, y)
-                p = self.prob_at(pos)
-
-                # If pos was never in the support (e.g., outside allowed region) → blank.
-                if p == 0.0 and pos not in self.p_even and pos not in self.p_odd:
-                    row_str.append("   --  ")
-                else:
-                    row_str.append(fmt.format(p))
-            print(" ".join(row_str))
-        print()
-
+        print("\n=== Even Belief ===")
+        # Transpose (.T) so that x is column and y is row (visual match to board)
+        print(np.round(self.p_even, precision).T) 
+        print("\n=== Odd Belief ===")
+        print(np.round(self.p_odd, precision).T)
