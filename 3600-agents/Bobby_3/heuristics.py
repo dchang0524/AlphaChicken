@@ -63,8 +63,7 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
     W_SPACE_MAX = 25.0   # very open
 
     # Material: always matters, but ramps up hard toward the end.
-    W_MAT_MIN   = 5.
-    0   # early
+    W_MAT_MIN   = 5.0   # early
     W_MAT_MAX   = 25.0  # late
 
     # # Trap risk: matters most when the board is open and mobility is high.

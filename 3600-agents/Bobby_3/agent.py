@@ -25,7 +25,7 @@ class PlayerAgent:
 
         # Scale for path-risk penalty (per square)
         # delta_risk = -TRAP_WEIGHT * P(trap at square)
-        self.TRAP_WEIGHT = 6.0
+        self.TRAP_WEIGHT = 8.0
 
         # Deterministic trapdoors (walls for BFS / voronoi / zobrist)
         self.known_traps: set[Tuple[int, int]] = set()
