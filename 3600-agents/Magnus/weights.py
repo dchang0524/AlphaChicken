@@ -40,6 +40,7 @@ class HeuristicWeights:
     # 9/10. Contested Squares Significance
     # Penalty = significance * W_CONTESTED_SIG * distance * (1 - progression)
     W_CONTESTED_SIG = 1.0
+    CONTESTED_OPENNESS_CORRELATION = 1.0
 
     # 11. Dynamic Weights / Openness
     # Openness normalization factor
@@ -57,8 +58,6 @@ class HeuristicWeights:
     TURD_CENTER_BONUS   = 2.0
     TURD_FRONTIER_BONUS = 3.0
 
-    # Agent Weights
-    TRAP_WEIGHT = 100.0 # Used in agent.py for path risk
 
 #     @classmethod
 #     def load_from_file(cls, filepath):

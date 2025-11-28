@@ -59,7 +59,9 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
     my_turd_save = HeuristicWeights.W_TURD_SAVINGS * cur_board.chicken_player.get_turds_left()
     
     # 9. Contested Dist (Penalty)
-    my_contested = -HeuristicWeights.W_CONTESTED_SIG * vor.sum_weighted_contested_dist * (1.0 - phase_mat)
+    #my_contested = -HeuristicWeights.W_CONTESTED_SIG * vor.sum_weighted_contested_dist * (1.0 - phase_mat)
+    my_contested = -HeuristicWeights.W_CONTESTED_SIG * vor.sum_weighted_contested_dist * ((1-HeuristicWeights.CONTESTED_OPENNESS_CORRELATION) + (1 - phase_mat) * HeuristicWeights.CONTESTED_OPENNESS_CORRELATION)
+    
     
     # 12. Loss Prevention (Penalty)
     my_loss = 0.0
@@ -94,7 +96,8 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
     opp_turd_save = HeuristicWeights.W_TURD_SAVINGS * cur_board.chicken_enemy.get_turds_left()
     
     # 9. Contested Dist
-    opp_contested = -HeuristicWeights.W_CONTESTED_SIG * vor.opp_sum_weighted_contested_dist * (1.0 - phase_mat)
+    #opp_contested = -HeuristicWeights.W_CONTESTED_SIG * vor.opp_sum_weighted_contested_dist * (1.0 - phase_mat)
+    opp_contested = -HeuristicWeights.W_CONTESTED_SIG * vor.opp_sum_weighted_contested_dist * ((1-HeuristicWeights.CONTESTED_OPENNESS_CORRELATION) + (1 - phase_mat) * HeuristicWeights.CONTESTED_OPENNESS_CORRELATION)
     
     # 12. Loss Prevention
     opp_loss = 0.0
