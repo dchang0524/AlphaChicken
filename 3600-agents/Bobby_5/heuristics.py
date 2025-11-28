@@ -25,9 +25,9 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
         my_eggs  = cur_board.chicken_player.eggs_laid
         opp_eggs = cur_board.chicken_enemy.eggs_laid
         if my_eggs > opp_eggs:
-            return INF + my_eggs - opp_eggs
+            return INF
         elif my_eggs < opp_eggs:
-            return -INF + my_eggs - opp_eggs
+            return -INF
         else:
             return 0
 
@@ -82,30 +82,11 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
     FRONTIER_COEFF = 0.5
 
     # Interpolate weights
-    w_space = W_SPACE_MIN + openness * (W_SPACE_MAX - W_SPACE_MIN)
+    w_space = W_SPACE_MIN + (1 - openness) * (W_SPACE_MAX - W_SPACE_MIN)
+    if openness == 0.00:
+        w_space = 0.0
     w_mat   = W_MAT_MIN   + (1.0 - phase_mat) * (W_MAT_MAX - W_MAT_MIN)
     # w_risk  = W_RISK_MIN  + openness * (W_RISK_MAX - W_RISK_MIN)
-
-
-
-    # my_trap_mass = 0.0
-    # opp_trap_mass = 0.0
-    # # Partition trap probabilities by Voronoi ownership
-    # for x in range(dim):
-    #     for y in range(dim):
-    #         p = trap_belief.prob_at((x, y))
-    #         if p <= 0.0:
-    #             continue
-
-    #         owner = vor.owner[x][y]
-    #         if owner == OWNER_ME:
-    #             my_trap_mass += p
-    #         elif owner == OWNER_OPP:
-    #             opp_trap_mass += p
-
-    # # Positive = worse for me (more trap mass in my region)
-    # risk_feature = my_trap_mass - opp_trap_mass
-    # risk_term    = -w_risk * risk_feature
 
     # --- Fragmentation & frontier geometry ---
 
@@ -121,14 +102,29 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
 
     frontier_dist_term = -FRONTIER_COEFF * (1 - frag_score) * max_contested_dist
 
-    CLOSEST_EGG_COEFF = (w_mat - 5)  * 0.10
+    PANIC_THRESHOLD = 8 
+    
+    # if moves_left <= PANIC_THRESHOLD:
+    #     # A) DECAY SPACE VALUE
+    #     decay_factor = max(0.0, moves_left / float(PANIC_THRESHOLD))
+        
+    #     w_space    *= decay_factor
+    #     W_FRAG     *= decay_factor
+    #     FRONTIER_COEFF *= 0.0 
+
+    #     # B) PANIC BOOST
+    #     # Only panic if we are actually losing or tied.
+    #     if mat_diff <= 0:
+    #         w_mat *= 100.0
+
+    CLOSEST_EGG_COEFF = (w_mat - 5) * 0.1 if moves_left <= PANIC_THRESHOLD or openness == 0 else 0.0
     egg_dist = vor.min_egg_dist if vor.min_egg_dist <= 63 else 0
     # --- Combine everything ---
 
     space_term = w_space * space_score
     mat_term   = w_mat   * mat_diff
 
-    return space_term + mat_term + frag_term + frontier_dist_term
+    return space_term + mat_term + frag_term + frontier_dist_term - CLOSEST_EGG_COEFF * egg_dist * 0.25
 
 Move = Tuple[Direction, MoveType]
 

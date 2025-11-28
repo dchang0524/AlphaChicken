@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from typing import List, Tuple, Set
+from collections import deque
 from game import board as board_mod  # type: ignore
 
-from .bfs_utils import bfs_distances_both  # assumes you defined this in bfs_utils.py
+from .bfs_utils import bfs_distances_both, compute_region_sizes  # assumes you defined this in bfs_utils.py
 
 OWNER_NONE = 0
 OWNER_ME   = 1  # current player (board.chicken_player)
@@ -33,11 +34,12 @@ def analyze(
         [OWNER_NONE for _ in range(dim)] for _ in range(dim)
     ]
 
-    my_owned   = 0
+    my_owned   = 0 # of "blocks"
     opp_owned  = 0
     contested  = 0
     max_contested_dist = 0
     min_contested_dist = dim * dim
+    average_contested_dist = 0
     min_egg_dist       = dim * dim
 
     my_voronoi  = 0
@@ -69,11 +71,14 @@ def analyze(
             # --------------------------
             if reachable_me and (not reachable_opp or d_me <= d_opp):
                 owner[x][y] = OWNER_ME
-                my_owned += 1
 
             elif reachable_opp:
                 owner[x][y] = OWNER_OPP
+            
+            if not reachable_me and reachable_opp:
                 opp_owned += 1
+            elif reachable_me and not reachable_opp:
+                my_owned += 1
 
             # --------------------------
             # 2) Contested frontier
@@ -88,7 +93,7 @@ def analyze(
                 and abs(d_me - d_opp) <= 1
             ):
                 contested += 1
-
+                average_contested_dist += d_me
                 # Depth of my frontier from my POV
                 if d_me > max_contested_dist:
                     max_contested_dist = d_me
@@ -190,11 +195,55 @@ def analyze(
     quad_spread = 1.0 - (max(quad_counts) / total) if total > 0 else 0.0
     quad_score = 0.5 * quad_spread + 0.5 * ((quad_dirs - 1) / 3.0)
     frag_score = 0.5 * cardinal_frag + 0.5 * quad_score
+    average_contested_dist /= contested if contested > 0 else 64
+
+    # --------------------------
+    # 5) Region Size Heuristic
+    # --------------------------
+    weighted_contested = 0.0
+    
+    # Compute region sizes for all my owned cells
+    region_sizes = compute_region_sizes(cur_board, owner, OWNER_ME)
+
+    # Sum up weighted contested score
+    # We iterate over the board to find contested squares (which we identified earlier, but didn't store explicitly)
+    # Alternatively, we can just iterate over the board again or store them in a list during the main loop.
+    # Let's just iterate again, it's 8x8 or similar small size.
+    
+    for x in range(dim):
+        for y in range(dim):
+            # Check if it is a contested square
+            # Condition: I own it, reachable by both, opp within 1 ply
+            d_me  = dist_me[x][y]
+            d_opp = dist_opp[x][y]
+            
+            if (
+                d_me >= 0
+                and d_opp >= 0
+                and owner[x][y] == OWNER_ME
+                and abs(d_me - d_opp) <= 1
+            ):
+                # It is contested.
+                # Value = RegionSize / (Distance + 1)
+                # Distance is d_me (distance from my chicken to this square)
+                # RegionSize is region_sizes[x][y]
+                
+                r_size = region_sizes[x][y]
+                if r_size > 0:
+                    # Weighted distance term
+                    # We want to prioritize being CLOSE to BIG regions.
+                    # So higher score if r_size is big and d_me is small.
+                    weighted_contested += r_size / (d_me + 1.0)
+                weighted_contested /= contested
 
     return VoronoiInfo(
+        owner              = owner,
+        region_sizes       = region_sizes,
         my_owned           = my_owned,
         opp_owned          = opp_owned,
         contested          = contested,
+        weighted_contested = weighted_contested,
+        average_contested_dist = average_contested_dist,
         max_contested_dist = max_contested_dist,
         min_contested_dist = min_contested_dist,
         min_egg_dist       = min_egg_dist,
@@ -240,9 +289,12 @@ class VoronoiInfo:
 
     __slots__ = (
         "owner",
+        "region_sizes",
         "my_owned",
         "opp_owned",
         "contested",
+        "weighted_contested",
+        "average_contested_dist",
         "max_contested_dist",
         "min_contested_dist",
         "min_egg_dist",
@@ -258,9 +310,13 @@ class VoronoiInfo:
 
     def __init__(
         self,
+        owner,
+        region_sizes,
         my_owned,
         opp_owned,
         contested,
+        weighted_contested,
+        average_contested_dist,
         max_contested_dist,
         min_contested_dist,
         min_egg_dist,
@@ -272,9 +328,13 @@ class VoronoiInfo:
         contested_left,
         frag_score,
     ):
+        self.owner              = owner
+        self.region_sizes       = region_sizes
         self.my_owned           = my_owned
         self.opp_owned          = opp_owned
         self.contested          = contested
+        self.weighted_contested = weighted_contested
+        self.average_contested_dist = average_contested_dist
         self.max_contested_dist = max_contested_dist
         self.min_contested_dist = min_contested_dist
         self.min_egg_dist       = min_egg_dist

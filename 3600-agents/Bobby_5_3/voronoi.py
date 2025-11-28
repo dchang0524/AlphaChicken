@@ -33,11 +33,12 @@ def analyze(
         [OWNER_NONE for _ in range(dim)] for _ in range(dim)
     ]
 
-    my_owned   = 0
+    my_owned   = 0 # of "blocks"
     opp_owned  = 0
     contested  = 0
     max_contested_dist = 0
     min_contested_dist = dim * dim
+    average_contested_dist = 0
     min_egg_dist       = dim * dim
 
     my_voronoi  = 0
@@ -69,11 +70,14 @@ def analyze(
             # --------------------------
             if reachable_me and (not reachable_opp or d_me <= d_opp):
                 owner[x][y] = OWNER_ME
-                my_owned += 1
 
             elif reachable_opp:
                 owner[x][y] = OWNER_OPP
+            
+            if not reachable_me and reachable_opp:
                 opp_owned += 1
+            elif reachable_me and not reachable_opp:
+                my_owned += 1
 
             # --------------------------
             # 2) Contested frontier
@@ -88,7 +92,7 @@ def analyze(
                 and abs(d_me - d_opp) <= 1
             ):
                 contested += 1
-
+                average_contested_dist += d_me
                 # Depth of my frontier from my POV
                 if d_me > max_contested_dist:
                     max_contested_dist = d_me
@@ -190,11 +194,13 @@ def analyze(
     quad_spread = 1.0 - (max(quad_counts) / total) if total > 0 else 0.0
     quad_score = 0.5 * quad_spread + 0.5 * ((quad_dirs - 1) / 3.0)
     frag_score = 0.5 * cardinal_frag + 0.5 * quad_score
+    average_contested_dist /= contested if contested > 0 else 64
 
     return VoronoiInfo(
         my_owned           = my_owned,
         opp_owned          = opp_owned,
         contested          = contested,
+        average_contested_dist = average_contested_dist,
         max_contested_dist = max_contested_dist,
         min_contested_dist = min_contested_dist,
         min_egg_dist       = min_egg_dist,
@@ -243,6 +249,7 @@ class VoronoiInfo:
         "my_owned",
         "opp_owned",
         "contested",
+        "average_contested_dist",
         "max_contested_dist",
         "min_contested_dist",
         "min_egg_dist",
@@ -261,6 +268,7 @@ class VoronoiInfo:
         my_owned,
         opp_owned,
         contested,
+        average_contested_dist,
         max_contested_dist,
         min_contested_dist,
         min_egg_dist,
@@ -275,6 +283,7 @@ class VoronoiInfo:
         self.my_owned           = my_owned
         self.opp_owned          = opp_owned
         self.contested          = contested
+        self.average_contested_dist = average_contested_dist
         self.max_contested_dist = max_contested_dist
         self.min_contested_dist = min_contested_dist
         self.min_egg_dist       = min_egg_dist
