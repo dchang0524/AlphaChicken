@@ -94,7 +94,9 @@ class PlayerAgent:
         openness = 0.0
         if max_contested > 0:
             openness = max(0.0, min(1.0, currV.contested / max_contested))
-            
+        
+        #debug_evaluate(board, currV, self.trap_belief, self.known_traps)
+
         # Distance to start
         my_pos = board.chicken_player.get_location()
         dist_to_start = abs(my_pos[0] - self.start_pos[0]) + abs(my_pos[1] - self.start_pos[1])
@@ -134,45 +136,12 @@ class PlayerAgent:
         if best_move is None:
             best_move = moves[0]
 
-        # Debug Visualization
-        # Forecast best move and print heuristic breakdown
-        # if best_move:
-        #     direction, move_type = best_move
-        #     debug_child = board.forecast_move(direction, move_type)
-        #     if debug_child:
-        #         # Hack: toggle is_as_turn back so get_board_string identifies 'chicken_player' as the mover (Me)
-        #         debug_child.is_as_turn = not debug_child.is_as_turn
-        #         debug_vor = self._get_voronoi(debug_child)
-        #         debug_evaluate(debug_child, debug_vor, self.trap_belief, self.known_traps)
-                
-        #         # Log gradient for TD learning
-        #         # We log: (turn, gradient_dict)
-        #         # The training script will associate this with the final reward.
-        #         grads = get_weight_gradient(debug_child, debug_vor, self.trap_belief)
-                
-        #         # We need a unique ID for the game or process to avoid collision if running parallel
-        #         # For now, just append to a shared log file with pid
-        #         log_entry = {
-        #             "pid": os.getpid(),
-        #             "turn": board.turn_count,
-        #             "grads": grads
-        #         }
-                
-        #         # Append to game_trace.jsonl in the agent directory
-        #         agent_dir = os.path.dirname(os.path.abspath(__file__))
-        #         trace_path = os.path.join(agent_dir, "game_trace.jsonl")
-        #         try:
-        #             with open(trace_path, "a") as f:
-        #                 f.write(json.dumps(log_entry) + "\n")
-        #         except Exception as e:
-        #             pass # Don't crash on logging
-
         return best_move
 
     # ------------------------------------------------------------------
     # Track whether traps are fully known
     # ------------------------------------------------------------------
-    def _update_trap_knowledge_state(self, board: board_mod.Board) -> None:
+    def _update_trap_knowledge_state(self, board : board_mod.Board) -> None:
         """
         Decide when traps are "fully known".
 
@@ -550,7 +519,7 @@ class PlayerAgent:
             base = self.max_depth - 3
         elif t < 40:
             base = self.max_depth - 2
-        elif t < 180:
+        elif t < 150:
             base = self.max_depth - 1
         else:
             base = self.max_depth

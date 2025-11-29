@@ -11,9 +11,16 @@ set -euo pipefail
 
 module load python/3.10
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VENV_DIR="${VENV_DIR:-$REPO_ROOT/magnus_rl_env}"
+# Use the directory where you ran `sbatch` as repo root
+REPO_ROOT="${SLURM_SUBMIT_DIR:-$PWD}"
 
+# Put the venv somewhere you actually own (home or project space)
+VENV_DIR="${VENV_DIR:-$HOME/magnus_rl_env}"
+
+echo "REPO_ROOT = $REPO_ROOT"
+echo "VENV_DIR  = $VENV_DIR"
+
+# Create / reuse venv
 if [ ! -d "$VENV_DIR" ]; then
     echo "Creating virtual environment at $VENV_DIR ..."
     python3.10 -m venv "$VENV_DIR"
@@ -29,7 +36,7 @@ fi
 cd "$REPO_ROOT"
 
 python -u 3600-agents/Magnus/train_weights.py \
-    --opponent Magnus Bobby_2 Bobby_5_2 Bobby_5_3 Bobby_3 \
+    --opponent Magnus Bobby_2 Bobby_5_3 Tal\
     --iterations "${ITERATIONS:-150}" \
     --population "${POPULATION:-32}" \
     --games-per-candidate "${GAMES_PER_CANDIDATE:-40}" \

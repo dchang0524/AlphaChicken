@@ -324,8 +324,6 @@ def analyze(
             opp_bad_turd_count += 1
 
     return VoronoiInfo(
-        owner              = owner,
-        region_sizes       = region_sizes,
         my_owned           = my_owned,
         opp_owned          = opp_owned,
         contested          = contested,
@@ -383,8 +381,6 @@ class VoronoiInfo:
     """
 
     __slots__ = (
-        "owner",
-        "region_sizes",
         "my_owned",
         "opp_owned",
         "contested",
@@ -412,8 +408,6 @@ class VoronoiInfo:
 
     def __init__(
         self,
-        owner,
-        region_sizes,
         my_owned,
         opp_owned,
         contested,
@@ -437,8 +431,6 @@ class VoronoiInfo:
         opp_bad_turd_count,
         opp_min_egg_dist,
     ):
-        self.owner              = owner
-        self.region_sizes       = region_sizes
         self.my_owned           = my_owned
         self.opp_owned          = opp_owned
         self.contested          = contested

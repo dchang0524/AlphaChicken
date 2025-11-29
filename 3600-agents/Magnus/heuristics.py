@@ -117,52 +117,52 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : Trapdoo
     return my_total - opp_total
 
 
-# def get_weight_gradient(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : TrapdoorBelief) -> Dict[str, float]:
-#     """
-#     Gradient of Magnus evaluation.
-#     """
-#     if cur_board.is_game_over():
-#         return {}
+def get_weight_gradient(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : TrapdoorBelief) -> Dict[str, float]:
+    """
+    Gradient of Magnus evaluation.
+    """
+    if cur_board.is_game_over():
+        return {}
 
-#     grads = {}
+    grads = {}
     
-#     # Base Egg (Implicit 1.0)
+    # Base Egg (Implicit 1.0)
     
-#     # Potential Eggs
-#     # W_SAFE_EGG * min(safe, cap)
-#     moves_left  = cur_board.turns_left_player
-#     safe_egg_cap = moves_left / 2.0 + 2.0
-#     grads["W_SAFE_EGG"] = min(vor.my_safe_potential_eggs, safe_egg_cap)
+    # Potential Eggs
+    # W_SAFE_EGG * min(safe, cap)
+    moves_left  = cur_board.turns_left_player
+    safe_egg_cap = moves_left / 2.0 + 2.0
+    grads["W_SAFE_EGG"] = min(vor.my_safe_potential_eggs, safe_egg_cap)
     
-#     # W_VORONOI_EGG * reachable
-#     grads["W_VORONOI_EGG"] = vor.my_reachable_potential_eggs
+    # W_VORONOI_EGG * reachable
+    grads["W_VORONOI_EGG"] = vor.my_reachable_potential_eggs
     
-#     # Egg Dist Bonus
-#     dim = cur_board.game_map.MAP_SIZE
-#     if vor.min_egg_dist < dim * dim:
-#         grads["W_EGG_DIST_BONUS"] = 1.0 / (vor.min_egg_dist + 1.0)
-#     else:
-#         grads["W_EGG_DIST_BONUS"] = 0.0
+    # Egg Dist Bonus
+    dim = cur_board.game_map.MAP_SIZE
+    if vor.min_egg_dist < dim * dim:
+        grads["W_EGG_DIST_BONUS"] = 1.0 / (vor.min_egg_dist + 1.0)
+    else:
+        grads["W_EGG_DIST_BONUS"] = 0.0
         
-#     # Turd Savings
-#     grads["W_TURD_SAVINGS"] = cur_board.chicken_player.get_turds_left()
+    # Turd Savings
+    grads["W_TURD_SAVINGS"] = cur_board.chicken_player.get_turds_left()
     
-#     # Contested Dist Penalty
-#     # -W_CONTESTED_SIG * sum * (1 - phase)
-#     total_moves = cur_board.MAX_TURNS
-#     phase_mat   = max(0.0, min(1.0, moves_left / total_moves))
-#     grads["W_CONTESTED_SIG"] = -vor.sum_weighted_contested_dist * (1.0 - phase_mat)
+    # Contested Dist Penalty
+    # -W_CONTESTED_SIG * sum * (1 - phase)
+    total_moves = cur_board.MAX_TURNS
+    phase_mat   = max(0.0, min(1.0, moves_left / total_moves))
+    grads["W_CONTESTED_SIG"] = -vor.sum_weighted_contested_dist * (1.0 - phase_mat)
     
-#     # Loss Penalty
-#     my_eggs  = cur_board.chicken_player.eggs_laid
-#     opp_eggs = cur_board.chicken_enemy.eggs_laid
-#     theoretical_max = my_eggs + 4 + (moves_left - vor.min_egg_dist) / 2.0
-#     if theoretical_max < opp_eggs:
-#         grads["W_LOSS_PENALTY"] = -1.0
-#     else:
-#         grads["W_LOSS_PENALTY"] = 0.0
+    # Loss Penalty
+    my_eggs  = cur_board.chicken_player.eggs_laid
+    opp_eggs = cur_board.chicken_enemy.eggs_laid
+    theoretical_max = my_eggs + 4 + (moves_left - vor.min_egg_dist) / 2.0
+    if theoretical_max < opp_eggs:
+        grads["W_LOSS_PENALTY"] = -1.0
+    else:
+        grads["W_LOSS_PENALTY"] = 0.0
 
-#     return grads
+    return grads
 
 
 def get_board_string(board: board_mod.Board, trapdoors=set()):
@@ -255,7 +255,7 @@ def debug_evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
     # --- MY SCORE CALCULATION ---
     
     # 1. Base Egg
-    my_base_egg = (my_eggs - opp_eggs)
+    my_base_egg = (my_eggs)
     
     # 2. Potential Eggs
     my_cap = my_moves_left / 2.0
@@ -381,6 +381,13 @@ def debug_evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
         if s > 0: return f"{s}"
         return "."
     output.append(print_grid("Region Sizes (My)", region_char, 2))
+
+    def trap_char(x, y):
+        p = trap_belief.prob_at((x, y))
+        if p < 0.01: return "."
+        if p > 0.99: return "100"
+        return f"{int(p*100)}"
+    output.append(print_grid("Trap Belief (%)", trap_char, 3))
 
     output.append("="*60 + "\n")
     

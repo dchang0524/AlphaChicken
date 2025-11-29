@@ -21,7 +21,7 @@ class HeuristicWeights:
 
     # 2. Voronoi Space Difference
     # Weight for reachable unclaimed eggs in my voronoi region
-    W_VORONOI_EGG = 0.7
+    W_VORONOI_EGG = 0.8
 
     # 3. Trapdoor Risk
     # Weight for probability of stepping on trapdoor
