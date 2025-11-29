@@ -1,14 +1,17 @@
 
 import math
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Deque
+from collections import deque
 
 from game import board as board_mod  # type: ignore
-from .voronoi import VoronoiInfo, OWNER_ME, OWNER_OPP  # adjust import path as needed
+from .voronoi import analyze, VoronoiInfo, OWNER_NONE, OWNER_ME, OWNER_OPP  # adjust import path as needed
 from .hiddenMarkov import TrapdoorBelief
 from game.enums import Direction, MoveType  # type: ignore
 from .weights import HeuristicWeights
+from .bfs_utils import bfs_distances_both
 
 INF = HeuristicWeights.W_LOSS_PENALTY #INF shouldn't be that big since we don't want it to mess up expectimax
+
 
 def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : TrapdoorBelief) -> float:
     """
@@ -227,28 +230,106 @@ def get_board_string(board: board_mod.Board, trapdoors=set()):
     )
 
 
-def debug_evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : TrapdoorBelief, known_traps: set) -> None:
+
+def debug_evaluate(
+    cur_board: board_mod.Board,
+    vor: VoronoiInfo,
+    trap_belief: TrapdoorBelief,
+    known_traps: set[Tuple[int, int]],
+    my_risk: float = 0.0,
+    opp_risk: float = 0.0,
+) -> None:
     """
     Debug version of evaluate that prints components for BOTH players.
+    Recomputes local owner grid and my region sizes instead of using vor.owner / vor.region_sizes.
     """
     dim = cur_board.game_map.MAP_SIZE
+
+    # ------------------------------------------------------------
+    # RECOMPUTE DISTANCES, OWNER GRID, AND REGION SIZES (MY)
+    # ------------------------------------------------------------
+
+    # 1) Distances
+    dist_me, dist_opp = bfs_distances_both(cur_board, known_traps)
+
+    # 2) Owner grid (same rule as in analyze)
+    owner = [[OWNER_NONE for _ in range(dim)] for _ in range(dim)]
+    for x in range(dim):
+        for y in range(dim):
+            d_me = dist_me[x][y]
+            d_opp = dist_opp[x][y]
+
+            reachable_me = (d_me >= 0)
+            reachable_opp = (d_opp >= 0)
+
+            if reachable_me and (not reachable_opp or d_me <= d_opp):
+                owner[x][y] = OWNER_ME
+            elif reachable_opp:
+                owner[x][y] = OWNER_OPP
+            # else OWNER_NONE
+
+    # 3) Region sizes for MY connected safe regions
+    region_sizes_my = [[0 for _ in range(dim)] for _ in range(dim)]
+    visited = [[False for _ in range(dim)] for _ in range(dim)]
+
+    eggs_me = cur_board.eggs_player
+    eggs_opp = cur_board.eggs_enemy
+    turds_me = cur_board.turds_player
+    turds_opp = cur_board.turds_enemy
+
+    # Build blocked grid using same rules as compute_region_sizes
+    blocked = [[False for _ in range(dim)] for _ in range(dim)]
+
+    # Hard blocks: all eggs and turds
+    for (x, y) in eggs_me | eggs_opp | turds_me | turds_opp:
+        blocked[x][y] = True
+
+    # Adjacent to any turd is also blocked
+    for (tx, ty) in turds_me | turds_opp:
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = tx + dx, ty + dy
+            if 0 <= nx < dim and 0 <= ny < dim:
+                blocked[nx][ny] = True
+
+    # Flood-fill only over MY owned, unblocked cells
+    for x in range(dim):
+        for y in range(dim):
+            if (
+                not visited[x][y]
+                and not blocked[x][y]
+                and owner[x][y] == OWNER_ME
+            ):
+                q = deque([(x, y)])
+                visited[x][y] = True
+                component = [(x, y)]
+
+                while q:
+                    cx, cy = q.popleft()
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = cx + dx, cy + dy
+                        if 0 <= nx < dim and 0 <= ny < dim:
+                            if (
+                                not visited[nx][ny]
+                                and not blocked[nx][ny]
+                                and owner[nx][ny] == OWNER_ME
+                            ):
+                                visited[nx][ny] = True
+                                q.append((nx, ny))
+                                component.append((nx, ny))
+
+                size = len(component)
+                for (cx, cy) in component:
+                    region_sizes_my[cx][cy] = size
+
+    # ------------------------------------------------------------
+    # ORIGINAL SCORING LOGIC (UNCHANGED)
+    # ------------------------------------------------------------
     
-    # --- SHARED DATA ---
     my_eggs  = cur_board.chicken_player.eggs_laid
     opp_eggs = cur_board.chicken_enemy.eggs_laid
     
     my_moves_left  = cur_board.turns_left_player
-    opp_moves_left = cur_board.turns_left_enemy # Assuming this exists or is same
-    # Actually board usually tracks turns for current player? 
-    # cur_board.turns_left_enemy might not exist on Board object depending on implementation.
-    # Let's check Board class if possible, or assume symmetry if turns are equal.
-    # Usually turns are equal or off by 1.
-    # Safe to use cur_board.MAX_TURNS - cur_board.turn_count // 2?
-    # Let's stick to cur_board.turns_left_player for both if unsure, or try to access enemy turns.
-    # Board usually has turns_left_player and turns_left_enemy?
-    # Let's assume turns_left_enemy exists or use turns_left_player for approximation.
-    # Actually, let's check if we can get it. 
-    # If not, we use turns_left_player.
+    opp_moves_left = cur_board.turns_left_enemy  # if this doesn't exist, you were already approximating
     
     total_moves = cur_board.MAX_TURNS
     
@@ -295,15 +376,11 @@ def debug_evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
     opp_base_egg = (opp_eggs)
     
     # 2. Potential Eggs
-    # Use my_moves_left as proxy if opp_moves_left unavailable, but usually it's close.
     opp_cap = my_moves_left / 2.0 
     opp_safe_term = HeuristicWeights.W_SAFE_EGG * vor.opp_safe_potential_eggs
     opp_vor_term  = HeuristicWeights.W_VORONOI_EGG * vor.opp_reachable_potential_eggs
     opp_potential = min(opp_safe_term + opp_vor_term, opp_cap)
     
-    # 4. Egg Dist
-    # opp_egg_dist_score = 0.0
-        
     # 5. Bad Turd
     opp_bad_turd = -HeuristicWeights.W_BAD_TURD * vor.opp_bad_turd_count
     
@@ -311,7 +388,7 @@ def debug_evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
     opp_turd_save = HeuristicWeights.W_TURD_SAVINGS * cur_board.chicken_enemy.get_turds_left()
     
     # 9. Contested Dist
-    opp_phase = my_phase # approx
+    opp_phase = my_phase  # approx
     opp_contested = -HeuristicWeights.W_CONTESTED_SIG * vor.opp_sum_weighted_contested_dist * (1.0 - opp_phase)
     
     # 12. Loss Prevention
@@ -322,13 +399,13 @@ def debug_evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
         
     opp_total = (
         opp_base_egg + opp_potential + 
-        # opp_egg_dist_score + 
         opp_turd_save + opp_bad_turd + opp_contested + opp_loss
     )
 
-    # --- OUTPUT ---
+    # ------------------------------------------------------------
+    # OUTPUT (UNCHANGED FORMATTING, JUST USING NEW OWNER/REGIONS)
+    # ------------------------------------------------------------
     
-    # Helper to print grid
     def print_grid(title, grid_func, cell_width=1):
         lines = []
         lines.append(f"--- {title} ---")
@@ -357,9 +434,14 @@ def debug_evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
     output.append(f"{'Turd Savings':<20} | {my_turd_save:>10.2f} | {opp_turd_save:>10.2f}")
     output.append(f"{'Contested Dist':<20} | {my_contested:>10.2f} | {opp_contested:>10.2f}")
     output.append(f"{'  (Sum W. Dist)':<20} | {vor.sum_weighted_contested_dist:>10.2f} | {vor.opp_sum_weighted_contested_dist:>10.2f}")
+    output.append(f"{'Risk Penalty':<20} | {my_risk:>10.2f} | {opp_risk:>10.2f}")
     output.append(f"{'Loss Penalty':<20} | {my_loss:>10.2f} | {opp_loss:>10.2f}")
     output.append("-" * 46)
-    output.append(f"{'TOTAL':<20} | {my_total:>10.2f} | {opp_total:>10.2f}")
+    output.append("-" * 46)
+    # Add risk to totals for display (since negamax does it)
+    my_total_with_risk = my_total + my_risk
+    opp_total_with_risk = opp_total + opp_risk
+    output.append(f"{'TOTAL':<20} | {my_total_with_risk:>10.2f} | {opp_total_with_risk:>10.2f}")
     
     output.append("\n")
     
@@ -367,21 +449,22 @@ def debug_evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
     board_str, _, _, _, _ = get_board_string(cur_board, known_traps)
     output.append(board_str)
     
-    # 2. Owner Grid
+    # 2. Owner Grid (using recomputed owner)
     def owner_char(x, y):
-        o = vor.owner[x][y]
+        o = owner[x][y]
         if o == OWNER_ME: return "M"
         if o == OWNER_OPP: return "O"
         return "."
     output.append(print_grid("Owner Grid", owner_char, 1))
     
-    # 3. Region Sizes
+    # 3. Region Sizes (My) using recomputed region_sizes_my
     def region_char(x, y):
-        s = vor.region_sizes[x][y]
+        s = region_sizes_my[x][y]
         if s > 0: return f"{s}"
         return "."
     output.append(print_grid("Region Sizes (My)", region_char, 2))
 
+    # 4. Trap Belief (%)
     def trap_char(x, y):
         p = trap_belief.prob_at((x, y))
         if p < 0.01: return "."
@@ -394,6 +477,8 @@ def debug_evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief : T
     # Write to file
     with open("debug_log.txt", "a") as f:
         f.write("\n".join(output))
+
+
 
 Move = Tuple[Direction, MoveType]
 
