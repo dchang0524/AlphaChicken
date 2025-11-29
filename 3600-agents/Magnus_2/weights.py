@@ -142,4 +142,4 @@ def _load_weights_on_import() -> None:
         HeuristicWeights.load_from_file()
 
 
-_load_weights_on_import(
+_load_weights_on_import()
