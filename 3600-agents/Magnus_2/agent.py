@@ -38,7 +38,7 @@ class PlayerAgent:
         self.potential_even: list[Tuple[int, int]] = []
         self.potential_odd:  list[Tuple[int, int]] = []
 
-        self.max_depth = 9
+        self.max_depth = 8
 
         # Transposition table: STATIC value g(board) (no path-risk), plus generation
         self.tt: Dict[int, TTEntry] = {}
@@ -95,7 +95,7 @@ class PlayerAgent:
         if max_contested > 0:
             openness = max(0.0, min(1.0, currV.contested / max_contested))
         
-        debug_evaluate(board, currV, self.trap_belief, self.known_traps)
+        # debug_evaluate(board, currV, self.trap_belief, self.known_traps)
 
         # Distance to start
         my_pos = board.chicken_player.get_location()
@@ -143,15 +143,15 @@ class PlayerAgent:
         scenarios.sort(key=lambda x: x[2], reverse=True)
         best_scenario = scenarios[0] # (even, odd, weight)
 
-        # 2. Trace PV
-        leaf_board, my_risk, opp_risk = self._trace_pv(board, best_move, best_scenario[0], best_scenario[1])
+        # # 2. Trace PV
+        # leaf_board, my_risk, opp_risk = self._trace_pv(board, best_move, best_scenario[0], best_scenario[1])
 
-        # 3. Log
-        if leaf_board:
-            # We need a voronoi for the leaf to evaluate it
-            # (Note: evaluate() expects voronoi info)
-            leaf_vor = self._get_voronoi(leaf_board)
-            debug_evaluate(leaf_board, leaf_vor, self.trap_belief, self.known_traps, my_risk, opp_risk)
+        # # 3. Log
+        # if leaf_board:
+        #     # We need a voronoi for the leaf to evaluate it
+        #     # (Note: evaluate() expects voronoi info)
+        #     leaf_vor = self._get_voronoi(leaf_board)
+        #     debug_evaluate(leaf_board, leaf_vor, self.trap_belief, self.known_traps, my_risk, opp_risk)
 
         return best_move
 
@@ -547,60 +547,60 @@ class PlayerAgent:
 
         return min(base, self.max_depth)
 
-    # ------------------------------------------------------------------
-    # PV Tracing
-    # ------------------------------------------------------------------
-    def _trace_pv(
-        self,
-        root_board: board_mod.Board,
-        best_move: Tuple,
-        even_trap: Optional[Tuple[int, int]],
-        odd_trap: Optional[Tuple[int, int]],
-    ) -> Tuple[Optional[board_mod.Board], float, float]:
-        """
-        Follows the best moves in the TT starting from root_board + best_move
-        under the given trap scenario, until a leaf or TT miss.
-        Returns (leaf_board, my_cum_risk, opp_cum_risk).
-        """
-        curr = root_board
-        my_risk = 0.0
-        opp_risk = 0.0
+    # # ------------------------------------------------------------------
+    # # PV Tracing
+    # # ------------------------------------------------------------------
+    # def _trace_pv(
+    #     self,
+    #     root_board: board_mod.Board,
+    #     best_move: Tuple,
+    #     even_trap: Optional[Tuple[int, int]],
+    #     odd_trap: Optional[Tuple[int, int]],
+    # ) -> Tuple[Optional[board_mod.Board], float, float]:
+    #     """
+    #     Follows the best moves in the TT starting from root_board + best_move
+    #     under the given trap scenario, until a leaf or TT miss.
+    #     Returns (leaf_board, my_cum_risk, opp_cum_risk).
+    #     """
+    #     curr = root_board
+    #     my_risk = 0.0
+    #     opp_risk = 0.0
 
-        # First step is determined by the root search result (best_move)
-        # We simulate it to get the next board
-        # Root is always ME moving.
-        curr, r = self._simulate_move_with_traps(curr, best_move, even_trap, odd_trap)
-        my_risk += r
+    #     # First step is determined by the root search result (best_move)
+    #     # We simulate it to get the next board
+    #     # Root is always ME moving.
+    #     curr, r = self._simulate_move_with_traps(curr, best_move, even_trap, odd_trap)
+    #     my_risk += r
         
-        # Now follow TT
-        # We need to be careful about depth/loops, but TT should guide us down.
-        # We'll just go for a max depth to be safe.
-        # Next mover is OPP.
-        is_my_turn = False
+    #     # Now follow TT
+    #     # We need to be careful about depth/loops, but TT should guide us down.
+    #     # We'll just go for a max depth to be safe.
+    #     # Next mover is OPP.
+    #     is_my_turn = False
 
-        for _ in range(20):
-            if curr.is_game_over():
-                return curr, my_risk, opp_risk
+    #     for _ in range(20):
+    #         if curr.is_game_over():
+    #             return curr, my_risk, opp_risk
 
-            # Lookup TT
-            base_key = zobrist_hash(curr, self.known_traps)
-            scenario_key = hash((even_trap, odd_trap))
-            key = base_key ^ scenario_key
+    #         # Lookup TT
+    #         base_key = zobrist_hash(curr, self.known_traps)
+    #         scenario_key = hash((even_trap, odd_trap))
+    #         key = base_key ^ scenario_key
             
-            entry = self.tt.get(key)
+    #         entry = self.tt.get(key)
             
-            # If no entry or no best move recorded, we are at a "leaf" of our search knowledge
-            if not entry or not entry.best_move:
-                return curr, my_risk, opp_risk
+    #         # If no entry or no best move recorded, we are at a "leaf" of our search knowledge
+    #         if not entry or not entry.best_move:
+    #             return curr, my_risk, opp_risk
             
-            # Simulate next move
-            curr, r = self._simulate_move_with_traps(curr, entry.best_move, even_trap, odd_trap)
+    #         # Simulate next move
+    #         curr, r = self._simulate_move_with_traps(curr, entry.best_move, even_trap, odd_trap)
             
-            if is_my_turn:
-                my_risk += r
-            else:
-                opp_risk += r
+    #         if is_my_turn:
+    #             my_risk += r
+    #         else:
+    #             opp_risk += r
             
-            is_my_turn = not is_my_turn
+    #         is_my_turn = not is_my_turn
             
-        return curr, my_risk, opp_risk
+    #     return curr, my_risk, opp_risk

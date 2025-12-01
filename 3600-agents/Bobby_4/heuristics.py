@@ -51,7 +51,7 @@ def evaluate(cur_board: board_mod.Board, vor: VoronoiInfo, trap_belief: Trapdoor
         # Only panic if we are actually losing or tied.
         if mat_diff <= 0:
             W_MAT *= 100.0
-    #
+    # --------------------------------------
 
     # 5. Openness Logic (Your existing logic)
     max_contested = 8.0

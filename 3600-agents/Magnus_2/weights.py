@@ -21,7 +21,7 @@ class HeuristicWeights:
 
     # 2. Voronoi Space Difference
     # Weight for reachable unclaimed eggs in my voronoi region
-    W_VORONOI_EGG = 0.80
+    W_VORONOI_EGG = 1.5 # changed form 0.8
 
     # 3. Trapdoor Risk
     # Weight for probability of stepping on trapdoor
@@ -30,7 +30,7 @@ class HeuristicWeights:
 
     # Constant for total trapdoor term calculation
     # term = W_TRAP_CONST * (4 + 8 * openness * ...)
-    W_TRAP_CONST = 0.8
+    W_TRAP_CONST = 0.5
     TRAP_WEIGHT = 1.0
 
     # 4. Closeness to Egg
@@ -39,7 +39,7 @@ class HeuristicWeights:
 
     # 5. Blocks (Safe Eggs)
     # Weight for unclaimed eggs where opponent can't reach
-    W_SAFE_EGG = 0.95
+    W_SAFE_EGG = 1.0
 
     # 6. Turd Bonus (Savings)
     # Bonus per turd left
