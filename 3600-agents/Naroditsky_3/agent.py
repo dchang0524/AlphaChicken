@@ -41,16 +41,17 @@ class PlayerAgent:
         self.obs_opp = np.zeros((dim, dim), dtype=np.int32)
 
         init_zobrist(dim, seed=1234567)
-        self._warmup()
+        self.is_warmed_up = False
 
     def _warmup(self):
-        print("Warming up Numba...")
-        dummy_grid = np.zeros((self.dim, self.dim), dtype=np.int32)
-        d_me = numba_bfs(0, 0, dummy_grid, self.dim)
-        d_opp = numba_bfs(self.dim-1, self.dim-1, dummy_grid, self.dim)
-        numba_voronoi(d_me, d_opp, 0, 0, 0, 1, self.dim)
-        numba_evaluate(0,0,10,40,0,0,0,0,0,0)
-        print("Warmup complete.")
+        try: 
+            dummy_grid = np.zeros((self.dim, self.dim), dtype=np.int32)
+            d_me = numba_bfs(0, 0, dummy_grid, self.dim)
+            d_opp = numba_bfs(self.dim-1, self.dim-1, dummy_grid, self.dim)
+            numba_voronoi(d_me, d_opp, 0, 0, 0, 1, self.dim)
+            numba_evaluate(0,0,10,40,0,0,0,0,0,0)
+        except Exception:
+            pass
 
     def _init_obstacles(self, board):
         """Rebuilds the obstacle grids from scratch (call once per turn)."""
@@ -84,6 +85,9 @@ class PlayerAgent:
                     self.obs_opp[nx, ny] += 1
 
     def play(self, board: board_mod.Board, sensor_data: List[Tuple[bool, bool]], time_left: Callable):
+        if not self.is_warmed_up:
+            self._warmup()
+            self.is_warmed_up = True
         engine_found = board.found_trapdoors
         new_found = engine_found - self.known_traps
         for pos in new_found:

@@ -9,7 +9,7 @@ OWNER_NONE = 0
 OWNER_ME = 1
 OWNER_OPP = 2
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def numba_bfs(start_x, start_y, obstacles, dim):
     dist = np.full((dim, dim), DIST_UNREACHABLE, dtype=np.int32)
     
@@ -77,7 +77,7 @@ def numba_bfs(start_x, start_y, obstacles, dim):
 
     return dist
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def numba_voronoi(dist_me, dist_opp, my_x, my_y, my_even, opp_even, dim):
     my_owned = 0
     opp_owned = 0
@@ -155,7 +155,7 @@ def numba_voronoi(dist_me, dist_opp, my_x, my_y, my_even, opp_even, dim):
         q1, q2, q3, q4
     )
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def numba_evaluate(
     my_eggs, opp_eggs, 
     moves_left, total_moves, 

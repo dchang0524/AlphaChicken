@@ -27,7 +27,7 @@ FEEL_KERNEL_DATA = np.array([
 # Numba Logic
 # ----------------------------------------------------------------------
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def fast_update_grid(
     p_grid: np.ndarray, 
     mask_grid: np.ndarray,
@@ -119,7 +119,7 @@ def fast_update_grid(
         if count > 0:
             p_grid /= count
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def fast_mark_safe(p_grid, x, y):
     if 0 <= x < p_grid.shape[0] and 0 <= y < p_grid.shape[1]:
         p_grid[x, y] = 0.0
