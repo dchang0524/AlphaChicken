@@ -7,12 +7,17 @@ bool GameRules::is_in_enemy_turd_zone(const GameState& state, Position pos) {
     return (pos_bb & turd_zone) != 0;
 }
 
-bool GameRules::is_cell_blocked(const GameState& state, Position pos) {
+bool GameRules::is_cell_blocked(const GameState& state, Position pos, Bitboard known_traps) {
     if (!BitboardOps::is_valid(pos.x, pos.y)) {
         return true;
     }
     
     Bitboard pos_bb = state.pos_to_bitboard(pos);
+    
+    // Blocked by known trapdoors (CRITICAL: must avoid!)
+    if ((pos_bb & known_traps) != 0) {
+        return true;
+    }
     
     // Blocked by enemy chicken
     if (pos == state.chicken_enemy_pos) {
@@ -71,7 +76,7 @@ bool GameRules::can_lay_turd_at_loc(const GameState& state, Position loc) {
     return true;
 }
 
-bool GameRules::is_valid_move(const GameState& state, Direction dir, MoveType move_type) {
+bool GameRules::is_valid_move(const GameState& state, Direction dir, MoveType move_type, Bitboard known_traps) {
     // Check turds left
     if (move_type == TURD && state.player_turds_left <= 0) {
         return false;
@@ -95,8 +100,8 @@ bool GameRules::is_valid_move(const GameState& state, Direction dir, MoveType mo
         return false;
     }
     
-    // Check if blocked
-    if (is_cell_blocked(state, new_loc)) {
+    // Check if blocked (including known trapdoors)
+    if (is_cell_blocked(state, new_loc, known_traps)) {
         return false;
     }
     
@@ -124,14 +129,14 @@ bool GameRules::is_valid_move(const GameState& state, Direction dir, MoveType mo
     return true;
 }
 
-std::vector<Move> GameRules::get_valid_moves(const GameState& state) {
+std::vector<Move> GameRules::get_valid_moves(const GameState& state, Bitboard known_traps) {
     std::vector<Move> moves;
     
     for (int d = 0; d < 4; ++d) {
         Direction dir = static_cast<Direction>(d);
         for (int mt = 0; mt < 3; ++mt) {
             MoveType move_type = static_cast<MoveType>(mt);
-            if (is_valid_move(state, dir, move_type)) {
+            if (is_valid_move(state, dir, move_type, known_traps)) {
                 moves.push_back(Move(dir, move_type));
             }
         }
@@ -186,6 +191,8 @@ UndoData GameRules::apply_move_inplace(GameState& state, const Move& move,
     }
     
     // Update turn
+    // NOTE: turn_count is NOT incremented during search (matches Python agent)
+    // It stays constant at the root value for phase calculations
     state.turns_left_player--;
     state.is_as_turn = !state.is_as_turn;
     
@@ -245,6 +252,6 @@ bool GameRules::is_game_over(const GameState& state) {
 }
 
 bool GameRules::has_moves_left(const GameState& state) {
-    return !get_valid_moves(state).empty();
+    return !get_valid_moves(state, 0).empty();  // Pass 0 for known_traps (not used in has_moves_left check)
 }
 

@@ -2,6 +2,7 @@
 #include "game_rules.h"
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 constexpr float INF = 1e8f;
 
@@ -22,7 +23,9 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
     float space_score = vor.vor_score;
     
     // Phase terms
-    int moves_left = MAX_TURNS - state.turn_count;
+    // Use turns_left_player (remaining turns for current player) instead of turn_count
+    // turn_count goes 0-80 (both players), MAX_TURNS is 40 (per player)
+    int moves_left = state.turns_left_player;
     int total_moves = MAX_TURNS;
     float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
     
@@ -33,31 +36,46 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
         openness = std::max(0.0f, std::min(1.0f, (float)vor.contested / max_contested));
     }
     
-    // Weights
-    float W_SPACE_MIN = 5.0f;
-    float W_SPACE_MAX = 30.0f;
-    float W_MAT_MIN = 5.0f;
-    float W_MAT_MAX = 25.0f;
-    float W_FRAG = 3.0f;
-    float W_FRONTIER_DIST = 1.5f;
-    float FRONTIER_COEFF = 0.5f;
+    // GRADUAL WEIGHT TRANSITION: Space starts high, Material starts low
+    // As game progresses, Space decreases and Material increases smoothly
+    // Using a smooth curve (squared) for gradual transition
     
-    // Endgame (last 8 moves)
-    if (moves_left <= 8) {
-        W_MAT_MIN = 200.0f;
-        W_MAT_MAX = 200.0f;
-        W_SPACE_MIN = 0.5f;
-        W_SPACE_MAX = 0.5f;
-        W_FRAG = 0.0f;
-        W_FRONTIER_DIST = 0.0f;
-        FRONTIER_COEFF = 0.0f;
-    }
+    // Game phase: 1.0 = early game (40 moves left), 0.0 = endgame (0 moves left)
+    float game_phase = phase_mat;
+    float transition = 1.0f - (game_phase * game_phase); // Smooth quadratic curve
     
+    // Early game weights (game_phase = 1.0, transition = 0.0)
+    float EARLY_W_SPACE_MIN = 50.0f;   // High space weight early
+    float EARLY_W_SPACE_MAX = 70.0f;
+    float EARLY_W_MAT_MIN = 50.0f;     // Material equal to space early game
+    float EARLY_W_MAT_MAX = 70.0f;
+    
+    // Late game weights (game_phase = 0.0, transition = 1.0)
+    float LATE_W_SPACE_MIN = 10.0f;    // Lower space weight late
+    float LATE_W_SPACE_MAX = 20.0f;
+    float LATE_W_MAT_MIN = 60.0f;      // Much higher material weight late game
+    float LATE_W_MAT_MAX = 80.0f;
+    
+    // Interpolate between early and late game weights
+    float W_SPACE_MIN = EARLY_W_SPACE_MIN + transition * (LATE_W_SPACE_MIN - EARLY_W_SPACE_MIN);
+    float W_SPACE_MAX = EARLY_W_SPACE_MAX + transition * (LATE_W_SPACE_MAX - EARLY_W_SPACE_MAX);
+    float W_MAT_MIN = EARLY_W_MAT_MIN + transition * (LATE_W_MAT_MIN - EARLY_W_MAT_MIN);
+    float W_MAT_MAX = EARLY_W_MAT_MAX + transition * (LATE_W_MAT_MAX - EARLY_W_MAT_MAX);
+    
+    // Other weights - keep fragmentation but scale it down as game progresses
+    float W_FRAG = 3.0f * game_phase;  // Fragmentation less important late game
+    float W_FRONTIER_DIST = 1.5f * game_phase;
+    float FRONTIER_COEFF = 0.5f * game_phase;
+    
+    // Apply openness to space weight (space less important when board is open)
     float w_space = W_SPACE_MIN + (1.0f - openness) * (W_SPACE_MAX - W_SPACE_MIN);
     if (openness == 0.0f) {
         w_space = 0.0f;
     }
-    float w_mat = W_MAT_MIN + (1.0f - phase_mat) * (W_MAT_MAX - W_MAT_MIN);
+    
+    // Material weight - use the interpolated max (already phase-adjusted)
+    // This naturally emphasizes material more as the game progresses
+    float w_mat = W_MAT_MAX;
     
     // Fragmentation
     float frag_score = std::max(0.0f, std::min(1.0f, vor.frag_score));
@@ -67,22 +85,30 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
     float max_contested_dist = (float)vor.max_contested_dist;
     float frontier_dist_term = -FRONTIER_COEFF * (1.0f - frag_score) * max_contested_dist;
     
-    // Closest egg distance
-    float PANIC_THRESHOLD = 8.0f;
-    float CLOSEST_EGG_COEFF = 0.0f;
-    if ((moves_left <= PANIC_THRESHOLD || openness == 0.0f) && moves_left > 8) {
-        CLOSEST_EGG_COEFF = (w_mat - 5.0f) * 0.1f;
-    }
-    float egg_dist = (vor.min_egg_dist <= 63) ? (float)vor.min_egg_dist : 0.0f;
+    // Removed CLOSEST_EGG_COEFF endgame logic - not needed with high search depth
     
     float space_term = w_space * space_score;
     float mat_term = w_mat * mat_diff;
     
-    return space_term + mat_term + frag_term + frontier_dist_term - CLOSEST_EGG_COEFF * egg_dist * 0.25f;
+    float total_eval = space_term + mat_term + frag_term + frontier_dist_term;
+    
+    // Debug logging disabled - too verbose
+    // Uncomment below and set to very high number (10000+) if needed for debugging
+    /*
+    static int eval_counter = 0;
+    if (++eval_counter % 50000 == 0) {
+        std::cerr << "EVAL_COMPONENTS my_eggs:" << my_eggs 
+                  << " opp_eggs:" << opp_eggs
+                  << " TOTAL_EVAL:" << total_eval << std::endl;
+    }
+    */
+    
+    return total_eval;
 }
 
 float Evaluator::get_trap_weight(const GameState& state, const VoronoiInfo& vor) {
-    int moves_left = MAX_TURNS - state.turn_count;
+    // Use turns_left_player instead of buggy MAX_TURNS - turn_count
+    int moves_left = state.turns_left_player;
     int total_moves = MAX_TURNS;
     float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
     
@@ -109,7 +135,8 @@ float Evaluator::get_trap_weight(const GameState& state, const VoronoiInfo& vor)
 }
 
 float Evaluator::get_turd_weight(const GameState& state) {
-    int moves_left = MAX_TURNS - state.turn_count;
+    // Use turns_left_player instead of buggy MAX_TURNS - turn_count
+    int moves_left = state.turns_left_player;
     int total_moves = MAX_TURNS;
     float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
     return 2.0f * phase_mat;

@@ -173,16 +173,46 @@ float SearchEngine::negamax(GameState& state,
     if (GameRules::is_game_over(state)) {
         int my_eggs = state.player_eggs_laid;
         int opp_eggs = state.enemy_eggs_laid;
-        if (my_eggs > opp_eggs) return INF;
-        if (my_eggs < opp_eggs) return -INF;
-        return 0.0f;
+        float terminal_eval;
+        if (my_eggs > opp_eggs) {
+            terminal_eval = INF;
+        } else if (my_eggs < opp_eggs) {
+            terminal_eval = -INF;
+        } else {
+            terminal_eval = 0.0f;
+        }
+        
+        // Debug logging at terminal nodes (disabled - too verbose)
+        // Uncomment below if needed for debugging
+        /*
+        static int terminal_counter = 0;
+        if (++terminal_counter % 1000 == 0) {
+            std::cerr << "TERMINAL_EVAL my_eggs:" << my_eggs
+                      << " opp_eggs:" << opp_eggs
+                      << " result:" << terminal_eval << std::endl;
+        }
+        */
+        
+        return terminal_eval;
     }
     
     // Leaf
     if (depth == 0) {
         VoronoiInfo vor = get_voronoi(state, known_traps);
-        return Evaluator::evaluate(state, vor, trap_belief) + cum_risk +
-               turd_weight * state.player_turds_left;
+        float base_eval = Evaluator::evaluate(state, vor, trap_belief);
+        float turd_term = turd_weight * state.player_turds_left;
+        float final_eval = base_eval + cum_risk + turd_term;
+        
+        // Debug logging disabled - too verbose
+        // Uncomment below and set to very high number (50000+) if needed for debugging
+        /*
+        static int leaf_counter = 0;
+        if (++leaf_counter % 50000 == 0) {
+            std::cerr << "LEAF_EVAL final_eval:" << final_eval << std::endl;
+        }
+        */
+        
+        return final_eval;
     }
     
     // TT lookup
@@ -212,7 +242,7 @@ float SearchEngine::negamax(GameState& state,
     }
     
     VoronoiInfo vor = get_voronoi(state, known_traps);
-    std::vector<Move> moves = GameRules::get_valid_moves(state);
+    std::vector<Move> moves = GameRules::get_valid_moves(state, known_traps);
     
     if (moves.empty()) {
         return -INF;
@@ -349,7 +379,7 @@ Move SearchEngine::search_root(const GameState& state_const,
     }
     
     // Get valid moves
-    std::vector<Move> moves = GameRules::get_valid_moves(state);
+    std::vector<Move> moves = GameRules::get_valid_moves(state, known_traps);
     if (moves.empty()) {
         return Move();
     }
@@ -535,6 +565,86 @@ Move SearchEngine::search_root(const GameState& state_const,
     // Log depth information to stderr for analysis
     // Format: DEPTH_LOG turn_count:depth_reached
     std::cerr << "DEPTH_LOG " << state.turn_count << ":" << actual_depth_reached << std::endl;
+    
+    // Log final chosen move with evaluation breakdown (once per turn)
+    VoronoiInfo vor = get_voronoi(state, known_traps);
+    
+    // Compute evaluation breakdown (same logic as evaluate function)
+    int my_eggs = state.player_eggs_laid;
+    int opp_eggs = state.enemy_eggs_laid;
+    int mat_diff = my_eggs - opp_eggs;
+    float space_score = vor.vor_score;
+    int moves_left = state.turns_left_player;
+    int total_moves = MAX_TURNS;
+    float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
+    
+    float max_contested = 8.0f;
+    float openness = 0.0f;
+    if (max_contested > 0) {
+        openness = std::max(0.0f, std::min(1.0f, (float)vor.contested / max_contested));
+    }
+    
+    float W_SPACE_MIN = 5.0f;
+    float W_SPACE_MAX = 30.0f;
+    float W_MAT_MIN = 5.0f;
+    float W_MAT_MAX = 25.0f;
+    float W_FRAG = 3.0f;
+    float FRONTIER_COEFF = 0.5f;
+    
+    float w_space = W_SPACE_MIN + (1.0f - openness) * (W_SPACE_MAX - W_SPACE_MIN);
+    if (openness == 0.0f) {
+        w_space = 0.0f;
+    }
+    float w_mat = W_MAT_MIN + (1.0f - phase_mat) * (W_MAT_MAX - W_MAT_MIN);
+    
+    float frag_score = std::max(0.0f, std::min(1.0f, vor.frag_score));
+    float frag_term = -W_FRAG * openness * frag_score;
+    
+    float max_contested_dist = (float)vor.max_contested_dist;
+    float frontier_dist_term = -FRONTIER_COEFF * (1.0f - frag_score) * max_contested_dist;
+    
+    float space_term = w_space * space_score;
+    float mat_term = w_mat * mat_diff;
+    float base_eval = space_term + mat_term + frag_term + frontier_dist_term;
+    
+    int egg_diff = my_eggs - opp_eggs;
+    
+    // Also evaluate the position AFTER the chosen move to see what the search thinks it leads to
+    GameState state_after_move = state;
+    UndoData undo_temp = GameRules::apply_move_inplace(state_after_move, best_move, Position(-1, -1), Position(-1, -1));
+    VoronoiInfo vor_after = get_voronoi(state_after_move, known_traps);
+    
+    // IMPORTANT: After apply_move_inplace, perspective switches!
+    // Evaluator::evaluate computes from the current player's perspective (which is now the opponent)
+    // So we need to negate the result to get it from our original perspective
+    float base_eval_after_opp_perspective = Evaluator::evaluate(state_after_move, vor_after, trap_belief);
+    float base_eval_after = -base_eval_after_opp_perspective;  // Negate to get our perspective
+    
+    // Get egg counts (swap because perspective switched)
+    int my_eggs_after = state_after_move.enemy_eggs_laid;
+    int opp_eggs_after = state_after_move.player_eggs_laid;
+    int mat_diff_after = my_eggs_after - opp_eggs_after;
+    
+    GameRules::undo_move_inplace(state_after_move, best_move, undo_temp);
+    
+    std::cerr << "ROOT_CHOSEN turn:" << state.turn_count
+              << " depth:" << actual_depth_reached
+              << " move:" << best_move.dir << "," << best_move.move_type
+              << " search_eval:" << best_val
+              << " eggs:" << my_eggs << "v" << opp_eggs
+              << " diff:" << egg_diff
+              << (egg_diff < 0 ? " [LOSING!]" : "") << std::endl;
+    
+    std::cerr << "  BEFORE_MOVE: eggs:" << my_eggs << "v" << opp_eggs
+              << " mat_diff:" << mat_diff
+              << " space:" << space_score << " w_space:" << w_space
+              << " space_term:" << space_term << " mat_term:" << mat_term
+              << " base_eval:" << base_eval << std::endl;
+    
+    std::cerr << "  AFTER_MOVE: eggs:" << my_eggs_after << "v" << opp_eggs_after
+              << " mat_diff:" << mat_diff_after
+              << " base_eval:" << base_eval_after << std::endl;
+    std::cerr.flush(); // Ensure it gets printed
     
     return best_move;
 }
