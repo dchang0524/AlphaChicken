@@ -1,6 +1,5 @@
 #include "evaluation.h"
 #include "game_rules.h"
-#include "bfs.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -8,9 +7,8 @@
 constexpr float INF = 1e8f;
 
 float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor, 
-                         const TrapdoorBelief& trap_belief,
-                         int root_moves_left,
-                         Bitboard known_traps) {
+                         const TrapdoorBelief& trap_belief) {
+    // Match Python heuristics.py exactly
     if (GameRules::is_game_over(state)) {
         int my_eggs = state.player_eggs_laid;
         int opp_eggs = state.enemy_eggs_laid;
@@ -19,157 +17,99 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
         return 0.0f;
     }
     
-    // ============================================================================
-    // NEW MATERIAL HEURISTIC (CAN BE REVERTED)
-    // ============================================================================
-    // This heuristic counts material as:
-    //   my_eggs = eggs_laid + 0.8 * (territory in my voronoi that opp can reach) 
-    //           + 0.9 * (territory in my voronoi that opp can't reach)
-    // 
-    // To REVERT to old heuristic:
-    //   1. Comment out the BFS computation and territory counting loop (lines ~27-78)
-    //   2. Uncomment the OLD MATERIAL CALCULATION (lines ~80-83)
-    //   3. Remove known_traps parameter from evaluate() signature
-    //   4. Update all evaluate() calls to remove known_traps parameter
-    // ============================================================================
+    // --- Basic features: material and space ---
+    int my_eggs = state.player_eggs_laid;
+    int opp_eggs = state.enemy_eggs_laid;
+    int mat_diff = my_eggs - opp_eggs;
     
-    // Get BFS distances to determine reachability
-    
-    // Get BFS distances to determine reachability
-    BFSResult bfs = BFS::bfs_distances_both(state, known_traps);
-    
-    // Compute my_eggs using new heuristic
-    float my_eggs_heuristic = (float)state.player_eggs_laid;
-    float opp_eggs_heuristic = (float)state.enemy_eggs_laid;
-    
-    // Count territory in my voronoi region
-    bool my_even = (state.player_even_chicken == 0);
-    bool opp_even = (state.enemy_even_chicken == 0);
-    
-    for (int x = 0; x < MAP_SIZE; ++x) {
-        for (int y = 0; y < MAP_SIZE; ++y) {
-            Position pos(x, y);
-            Bitboard pos_bb = state.pos_to_bitboard(pos);
-            
-            // Skip squares that already have eggs on them (these are "claimed")
-            if ((pos_bb & state.eggs_player) != 0 || (pos_bb & state.eggs_enemy) != 0) {
-                continue;
-            }
-            
-            int d_me = bfs.dist_me[x][y];
-            int d_opp = bfs.dist_opp[x][y];
-            
-            bool reachable_me = (d_me >= 0);
-            bool reachable_opp = (d_opp >= 0);
-            
-            bool is_even_sq = BitboardOps::is_even_square(pos);
-            
-            // Determine if square is in my voronoi region (unclaimed eggs/territory)
-            if (reachable_me && (!reachable_opp || d_me <= d_opp)) {
-                // Check parity (only count squares I can actually lay eggs on)
-                if (is_even_sq == my_even) {
-                    if (reachable_opp) {
-                        // Opponent can reach this square - weight 0.8
-                        my_eggs_heuristic += 0.8f;
-                    } else {
-                        // Opponent can't reach this square - weight 0.9
-                        my_eggs_heuristic += 0.9f;
-                    }
-                }
-            }
-            
-            // Symmetric for opponent (unclaimed eggs in opponent's voronoi)
-            if (reachable_opp && (!reachable_me || d_opp < d_me)) {
-                if (is_even_sq == opp_even) {
-                    if (reachable_me) {
-                        opp_eggs_heuristic += 0.8f;
-                    } else {
-                        opp_eggs_heuristic += 0.9f;
-                    }
-                }
-            }
-        }
-    }
-    
-    // OLD MATERIAL CALCULATION (COMMENTED OUT FOR REVERT)
-    // int my_eggs = state.player_eggs_laid;
-    // int opp_eggs = state.enemy_eggs_laid;
-    // int mat_diff = my_eggs - opp_eggs;
-    
-    // NEW: Use heuristic-based material difference
-    float mat_diff = my_eggs_heuristic - opp_eggs_heuristic;
-    
+    // Voronoi score: my_voronoi - opp_voronoi (already POV-relative)
     float space_score = vor.vor_score;
     
-    // Phase terms
-    // Use root_moves_left (from root position) so weights don't change during search
-    // Only change weights between actual game turns, not during search
-    int moves_left = root_moves_left;
+    // --- Phase terms: time-based for material, structure-based for space/risk ---
+    // Time-to-go: material matters more as we approach the end.
+    // Match Python exactly: moves_left = MAX_TURNS - turn_count
+    int moves_left = MAX_TURNS - state.turn_count;
     int total_moves = MAX_TURNS;
-    float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
+    float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves)); // 1 early, 0 late
     
-    // Openness
+    // Openness: how much frontier there is. 0 = closed, 1 = very open.
+    // There can't be more than ~8 contested squares; normalize by that.
     float max_contested = 8.0f;
     float openness = 0.0f;
     if (max_contested > 0) {
         openness = std::max(0.0f, std::min(1.0f, (float)vor.contested / max_contested));
     }
     
-    // GRADUAL WEIGHT TRANSITION: Space starts high, Material starts low
-    // As game progresses, Space decreases and Material increases smoothly
-    // Using a smooth curve (squared) for gradual transition
+    // --- Weights in egg units (tunable) ---
+    // Space: important when open, but never completely zero.
+    float W_SPACE_MIN = 5.0f;   // closed
+    float W_SPACE_MAX = 30.0f;  // very open
     
-    // Game phase: 1.0 = early game (40 moves left), 0.0 = endgame (0 moves left)
-    float game_phase = phase_mat;
-    float transition = 1.0f - (game_phase * game_phase); // Smooth quadratic curve
+    // Material: always matters, but ramps up hard toward the end.
+    float W_MAT_MIN = 5.0f;   // early
+    float W_MAT_MAX = 25.0f;  // late
     
-    // Early game weights (game_phase = 1.0, transition = 0.0)
-    float EARLY_W_SPACE_MIN = 50.0f;   // High space weight early
-    float EARLY_W_SPACE_MAX = 70.0f;
-    float EARLY_W_MAT_MIN = 50.0f;     // Material equal to space early game
-    float EARLY_W_MAT_MAX = 70.0f;
+    // Fragmentation: how bad it is if contested squares are spatially split.
+    float W_FRAG = 3.0f;
     
-    // Late game weights (game_phase = 0.0, transition = 1.0)
-    float LATE_W_SPACE_MIN = 10.0f;    // Lower space weight late
-    float LATE_W_SPACE_MAX = 20.0f;
-    float LATE_W_MAT_MIN = 60.0f;      // Much higher material weight late game
-    float LATE_W_MAT_MAX = 80.0f;
+    // Frontier distance: how bad it is if I'm far from my most distant frontier.
+    float W_FRONTIER_DIST = 1.5f;
     
-    // Interpolate between early and late game weights
-    float W_SPACE_MIN = EARLY_W_SPACE_MIN + transition * (LATE_W_SPACE_MIN - EARLY_W_SPACE_MIN);
-    float W_SPACE_MAX = EARLY_W_SPACE_MAX + transition * (LATE_W_SPACE_MAX - EARLY_W_SPACE_MAX);
-    float W_MAT_MIN = EARLY_W_MAT_MIN + transition * (LATE_W_MAT_MIN - EARLY_W_MAT_MIN);
-    float W_MAT_MAX = EARLY_W_MAT_MAX + transition * (LATE_W_MAT_MAX - EARLY_W_MAT_MAX);
+    // Frontier closeness bonus.
+    float FRONTIER_COEFF = 0.5f;
     
-    // Other weights - keep fragmentation but scale it down as game progresses
-    float W_FRAG = 3.0f * game_phase;  // Fragmentation less important late game
-    float W_FRONTIER_DIST = 1.5f * game_phase;
-    float FRONTIER_COEFF = 0.5f * game_phase;
+    // --- ENDGAME CASH OUT ---
+    // If < 8 turns left, change priorities entirely.
+    if (moves_left <= 8) {
+        // A) EGGS ARE EVERYTHING (Spike value to force laying)
+        W_MAT_MIN = 200.0f;
+        W_MAT_MAX = 200.0f;
+        
+        // B) SPACE IS WORTHLESS (Just a tiebreaker)
+        W_SPACE_MIN = 0.5f;
+        W_SPACE_MAX = 0.5f;
+        
+        // C) STOP BLOCKING
+        // Set penalties to 0 so we stop worrying about the wall/enemy
+        W_FRAG = 0.0f;
+        W_FRONTIER_DIST = 0.0f;
+        FRONTIER_COEFF = 0.0f;
+    }
     
-    // Apply openness to space weight (space less important when board is open)
-    float w_space = W_SPACE_MIN + (phase_mat) * (W_SPACE_MAX - W_SPACE_MIN);
+    // Interpolate weights
+    // Python: w_space = W_SPACE_MIN + (1 - openness) * (W_SPACE_MAX - W_SPACE_MIN)
+    float w_space = W_SPACE_MIN + (1.0f - openness) * (W_SPACE_MAX - W_SPACE_MIN);
     if (openness == 0.0f) {
         w_space = 0.0f;
     }
+    // Python: w_mat = W_MAT_MIN + (1.0 - phase_mat) * (W_MAT_MAX - W_MAT_MIN)
+    float w_mat = W_MAT_MIN + (1.0f - phase_mat) * (W_MAT_MAX - W_MAT_MIN);
     
-    // Material weight - use the interpolated max (already phase-adjusted)
-    // This naturally emphasizes material more as the game progresses
-    float w_mat = W_MAT_MAX;
-    
-    // Fragmentation
-    float frag_score = std::max(0.0f, std::min(1.0f, vor.frag_score));
+    // --- Fragmentation & frontier geometry ---
+    // 1) Fragmentation score: 0 (all frontier in one blob) → 1 (highly fragmented).
+    // Penalize more when the board is open.
+    float frag_score = vor.frag_score;
+    frag_score = std::max(0.0f, std::min(1.0f, frag_score));
     float frag_term = -W_FRAG * openness * frag_score;
     
-    // Frontier distance
+    // 2) Max contested distance from *my chicken* to any contested square.
+    // Encourage being close to the whole frontier: large distance = bad.
     float max_contested_dist = (float)vor.max_contested_dist;
     float frontier_dist_term = -FRONTIER_COEFF * (1.0f - frag_score) * max_contested_dist;
     
-    // Removed CLOSEST_EGG_COEFF endgame logic - not needed with high search depth
+    // CLOSEST_EGG_COEFF from Python
+    float PANIC_THRESHOLD = 8.0f;
+    float CLOSEST_EGG_COEFF = 0.0f;
+    if (moves_left <= PANIC_THRESHOLD || openness == 0.0f) {
+        CLOSEST_EGG_COEFF = (w_mat - 5.0f) * 0.1f;
+    }
+    float egg_dist = (vor.min_egg_dist <= 63) ? (float)vor.min_egg_dist : 0.0f;
     
+    // --- Combine everything ---
     float space_term = w_space * space_score;
     float mat_term = w_mat * mat_diff;
     
-    float total_eval = space_term + mat_term + frag_term + frontier_dist_term;
+    float total_eval = space_term + mat_term + frag_term + frontier_dist_term - CLOSEST_EGG_COEFF * egg_dist * 0.25f;
     
     // Debug logging disabled - too verbose
     // Uncomment below and set to very high number (10000+) if needed for debugging
@@ -186,8 +126,8 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
 }
 
 float Evaluator::get_trap_weight(const GameState& state, const VoronoiInfo& vor) {
-    // Use turns_left_player instead of buggy MAX_TURNS - turn_count
-    int moves_left = state.turns_left_player;
+    // Match Python exactly: moves_left = MAX_TURNS - turn_count
+    int moves_left = MAX_TURNS - state.turn_count;
     int total_moves = MAX_TURNS;
     float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
     
@@ -214,8 +154,8 @@ float Evaluator::get_trap_weight(const GameState& state, const VoronoiInfo& vor)
 }
 
 float Evaluator::get_turd_weight(const GameState& state) {
-    // Use turns_left_player instead of buggy MAX_TURNS - turn_count
-    int moves_left = state.turns_left_player;
+    // Match Python exactly: moves_left = MAX_TURNS - turn_count
+    int moves_left = MAX_TURNS - state.turn_count;
     int total_moves = MAX_TURNS;
     float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
     return 2.0f * phase_mat;
@@ -230,7 +170,7 @@ std::vector<Move> Evaluator::move_order(const GameState& state,
     
     int total_contested = vor.contested;
     
-    // Filter: if no contested squares, drop TURD moves
+    // Match Python exactly: If no contested squares: drop TURD moves
     if (total_contested == 0) {
         filtered.erase(
             std::remove_if(filtered.begin(), filtered.end(),
@@ -279,6 +219,13 @@ std::vector<Move> Evaluator::move_order(const GameState& state,
     Position my_pos = state.chicken_player_pos;
     int my_center_dist = BitboardOps::manhattan(my_pos, center);
     
+    // AGGRESSION BOOST: When behind in space (being attacked), prioritize moves toward contested areas
+    float effective_dir_weight = DIR_WEIGHT;
+    if (vor.vor_score < 0.0f && vor.contested > 0) {
+        // Behind in space and being contested - boost directional preference significantly
+        effective_dir_weight = DIR_WEIGHT * 3.0f; // Triple the weight to fight back
+    }
+    
     for (const Move& mv : filtered) {
         float score = 0.0f;
         
@@ -291,8 +238,8 @@ std::vector<Move> Evaluator::move_order(const GameState& state,
             score = BASE_TURD;
         }
         
-        // Direction bonus
-        score += DIR_WEIGHT * contested_by_dir[mv.dir];
+        // Direction bonus (boosted when being attacked)
+        score += effective_dir_weight * contested_by_dir[mv.dir];
         
         // TURD buffs
         if (mv.move_type == TURD) {
@@ -303,6 +250,16 @@ std::vector<Move> Evaluator::move_order(const GameState& state,
                 score += TURD_FRONTIER_BONUS;
             }
         }
+        
+        // Tie-breaking: Add tiny deterministic offset based on move direction
+        // This prevents oscillation when moves have identical scores
+        // Order: RIGHT > DOWN > UP > LEFT (arbitrary but consistent)
+        float tie_breaker = 0.0f;
+        if (mv.dir == RIGHT) tie_breaker = 0.0003f;
+        else if (mv.dir == DOWN) tie_breaker = 0.0002f;
+        else if (mv.dir == UP) tie_breaker = 0.0001f;
+        // LEFT gets 0.0 (lowest)
+        score += tie_breaker;
         
         scored.push_back({score, mv});
     }

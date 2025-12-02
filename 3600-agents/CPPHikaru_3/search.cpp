@@ -163,13 +163,17 @@ float SearchEngine::negamax(GameState& state,
                             Bitboard visited_squares_opp,
                             const std::vector<Position>& potential_even,
                             const std::vector<Position>& potential_odd,
-                            std::function<double()> time_left,
-                            int root_moves_left) {
+                            std::function<double()> time_left) {
+    
+    // CRITICAL: Save original alpha/beta for TT flag determination
+    // Alpha/beta get mutated during search, but we need originals for correct TT bounds
+    float alpha_orig = alpha;
+    float beta_orig = beta;
     
     // Check time
     if (time_left() < 0.01) {
         VoronoiInfo vor = get_voronoi(state, known_traps);
-        return Evaluator::evaluate(state, vor, trap_belief, root_moves_left, known_traps) + cum_risk +
+        return Evaluator::evaluate(state, vor, trap_belief) + cum_risk +
                turd_weight * state.player_turds_left;
     }
     
@@ -203,7 +207,7 @@ float SearchEngine::negamax(GameState& state,
     // Leaf
     if (depth == 0) {
         VoronoiInfo vor = get_voronoi(state, known_traps);
-        float base_eval = Evaluator::evaluate(state, vor, trap_belief, root_moves_left, known_traps);
+        float base_eval = Evaluator::evaluate(state, vor, trap_belief);
         float turd_term = turd_weight * state.player_turds_left;
         float final_eval = base_eval + cum_risk + turd_term;
         
@@ -317,7 +321,7 @@ float SearchEngine::negamax(GameState& state,
                                    trap_belief, known_traps,
                                    even_trap, odd_trap, child_cum_risk, 
                                    child_visited_our, child_visited_opp,
-                                   potential_even, potential_odd, time_left, root_moves_left);
+                                   potential_even, potential_odd, time_left);
         
         // Undo move (visited_squares is automatically restored since we passed by value)
         GameRules::undo_move_inplace(state, mv, undo);
@@ -336,14 +340,16 @@ float SearchEngine::negamax(GameState& state,
     }
     
     // Store in TT
+    // CRITICAL: Use original alpha_orig/beta_orig for TT flag, not mutated alpha/beta
+    // This prevents "deeper loses to shallower" bug where incorrect bounds corrupt search
     float g_here = best_val - cum_risk;
     TTFlag flag;
-    if (best_val <= alpha) {
-        flag = TT_UPPER;
-    } else if (best_val >= beta) {
-        flag = TT_LOWER;
+    if (best_val <= alpha_orig) {
+        flag = TT_UPPER;  // All values <= alpha_orig (upper bound)
+    } else if (best_val >= beta_orig) {
+        flag = TT_LOWER;  // All values >= beta_orig (lower bound, caused beta cutoff)
     } else {
-        flag = TT_EXACT;
+        flag = TT_EXACT;  // Exact value between alpha_orig and beta_orig
     }
     
     transposition_table[key] = {
@@ -364,9 +370,6 @@ Move SearchEngine::search_root(const GameState& state_const,
                                std::function<double()> time_left) {
     // Work with a mutable copy
     GameState state = state_const;
-    
-    // Capture root's moves_left for weight calculation (weights should not change during search)
-    int root_moves_left = state.turns_left_player;
     
     // Update traps_fully_known status
     int trap_count = BitboardOps::popcount(known_traps);
@@ -394,16 +397,17 @@ Move SearchEngine::search_root(const GameState& state_const,
     
     // Order moves
     std::vector<Move> ordered_moves = Evaluator::move_order(state, moves, vor_root);
-    // Promote last root best move if valid
+    // Promote last root best move ONLY if it's already in top 3
+    // This prevents oscillation: if the move fell out of favor, don't force it back
     auto it = std::find(ordered_moves.begin(), ordered_moves.end(), last_root_best);
-    if (it != ordered_moves.end()) {
+    if (it != ordered_moves.end() && std::distance(ordered_moves.begin(), it) < 3) {
         ordered_moves.erase(it);
         ordered_moves.insert(ordered_moves.begin(), last_root_best);
     }
     
     // Get potential traps
-    std::vector<Position> potential_even = trap_belief.get_potential_even(0.1f);
-    std::vector<Position> potential_odd = trap_belief.get_potential_odd(0.1f);
+    std::vector<Position> potential_even = trap_belief.get_potential_even(0.25f);
+    std::vector<Position> potential_odd = trap_belief.get_potential_odd(0.25f);
     
     std::vector<TrapScenario> scenarios = build_trap_scenarios(trap_belief, potential_even, potential_odd);
     
@@ -425,7 +429,7 @@ Move SearchEngine::search_root(const GameState& state_const,
     Move best_move = moves[0]; // Default to first move
     float best_val = -INF;
     // int target_depth = choose_max_depth(state);
-    const int FIXED_DEPTH = 11; // HARDCODED DEPTH FOR TESTING
+    const int FIXED_DEPTH = 9; // Match Python max_depth = 9
     
     // Create time checker with cached time_left to reduce callback overhead
     // double cached_time_left = time_left();
@@ -447,7 +451,11 @@ Move SearchEngine::search_root(const GameState& state_const,
     int actual_depth_reached = 0;
     
     // ITERATIVE DEEPENING: Search from depth 1 up to FIXED_DEPTH (not adaptive)
+    // Only update best_move if depth completes successfully (don't use incomplete results)
     for (int depth = 1; depth <= FIXED_DEPTH && depth <= max_depth; ++depth) {
+        // Track if this depth completed successfully
+        bool depth_completed = true;
+        
         // Always mark that we're attempting this depth
         actual_depth_reached = depth;
         
@@ -476,13 +484,18 @@ Move SearchEngine::search_root(const GameState& state_const,
         float beta = INF;
         
         // move_counter = 0;
+        bool all_moves_searched = true;
         for (const Move& mv : ordered_moves) {
             // Check time budget less frequently (only every few moves to reduce overhead)
             // if (++move_counter % 3 == 0) {
             //     // Refresh cache and check
             //     cached_time_left = time_left();
             //     double time_remaining = cached_time_left - time_end_abs;
-            //     if (time_remaining < 0.05) break; // Stop if less than 0.05s remaining
+            //     if (time_remaining < 0.05) {
+            //         all_moves_searched = false; // Mark incomplete if we break due to time
+            //         depth_completed = false;
+            //         break; // Stop if less than 0.05s remaining
+            //     }
             // }
             
             // Risk calculation - track visited squares separately for each player
@@ -548,7 +561,7 @@ Move SearchEngine::search_root(const GameState& state_const,
                                     scenario.has_even ? scenario.even_trap : Position(-1, -1),
                                     scenario.has_odd ? scenario.odd_trap : Position(-1, -1),
                                     child_cum_risk, child_visited_our, child_visited_opp,
-                                    potential_even, potential_odd, time_checker, root_moves_left);
+                                    potential_even, potential_odd, time_checker);
                 
                 // Undo move
                 GameRules::undo_move_inplace(state, mv, undo);
@@ -565,15 +578,33 @@ Move SearchEngine::search_root(const GameState& state_const,
                 alpha = current_best_val;
             }
             if (alpha >= beta) {
-                break;
+                break; // Alpha-beta cutoff - this is normal, depth still completes
+                // Note: We break here, but all_moves_searched will be false
+                // However, alpha-beta cutoffs mean we found a provably best move, so this is OK
             }
         }
         
-        // Update best move after completing this depth
-        if (current_best_val > best_val) {
+        // Check if we completed searching all moves OR found provable best via alpha-beta
+        // If we broke early due to time (not alpha-beta), don't use incomplete results
+        if (!all_moves_searched && alpha < beta) {
+            // We didn't finish all moves AND didn't prove a best move via alpha-beta
+            // This means incomplete search (likely time cutoff) - don't use this depth's results
+            depth_completed = false;
+        }
+        // Note: If we broke due to alpha >= beta, we have a provable best move, so depth is valid
+        // If we searched all moves, depth is also valid
+        
+        // Only update best move if depth completed successfully
+        // If we broke early due to time, keep previous best_move
+        if (depth_completed && current_best_val > best_val) {
             best_val = current_best_val;
             best_move = current_best;
             last_root_best = current_best;
+        }
+        
+        // If depth didn't complete, break and return best_move from previous depth
+        if (!depth_completed) {
+            break;
         }
     } // END OF ITERATIVE DEEPENING LOOP (depths 1 to FIXED_DEPTH)
     
@@ -589,7 +620,8 @@ Move SearchEngine::search_root(const GameState& state_const,
     int opp_eggs = state.enemy_eggs_laid;
     int mat_diff = my_eggs - opp_eggs;
     float space_score = vor.vor_score;
-    int moves_left = state.turns_left_player;
+    // Match Python exactly: moves_left = MAX_TURNS - turn_count
+    int moves_left = MAX_TURNS - state.turn_count;
     int total_moves = MAX_TURNS;
     float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
     
@@ -632,7 +664,7 @@ Move SearchEngine::search_root(const GameState& state_const,
     // IMPORTANT: After apply_move_inplace, perspective switches!
     // Evaluator::evaluate computes from the current player's perspective (which is now the opponent)
     // So we need to negate the result to get it from our original perspective
-    float base_eval_after_opp_perspective = Evaluator::evaluate(state_after_move, vor_after, trap_belief, root_moves_left, known_traps);
+    float base_eval_after_opp_perspective = Evaluator::evaluate(state_after_move, vor_after, trap_belief);
     float base_eval_after = -base_eval_after_opp_perspective;  // Negate to get our perspective
     
     // Get egg counts (swap because perspective switched)
@@ -663,4 +695,5 @@ Move SearchEngine::search_root(const GameState& state_const,
     
     return best_move;
 }
+
 

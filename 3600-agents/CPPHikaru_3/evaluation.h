@@ -9,9 +9,7 @@
 class Evaluator {
 public:
     static float evaluate(const GameState& state, const VoronoiInfo& vor, 
-                         const TrapdoorBelief& trap_belief,
-                         int root_moves_left,
-                         Bitboard known_traps);
+                         const TrapdoorBelief& trap_belief);
     
     static std::vector<Move> move_order(const GameState& state, 
                                        const std::vector<Move>& moves,

@@ -47,10 +47,13 @@ GAME_ID=${SLURM_ARRAY_TASK_ID}
 # Get opponent from environment or use default
 OPPONENT="${OPPONENT:-Hikaru_3}"
 
-echo "Running game ${GAME_ID}: CPPHikaru_3 vs ${OPPONENT}"
+# Get player (A or B) from environment or use default
+PLAYER="${PLAYER:-A}"
+
+echo "Running game ${GAME_ID}: CPPHikaru_3 vs ${OPPONENT} (as player ${PLAYER})"
 
 # Run single game
-bash run_single_game.sh "${GAME_ID}" "${OPPONENT}"
+bash run_single_game.sh "${GAME_ID}" "${OPPONENT}" "${PLAYER}"
 
 echo "Game ${GAME_ID} completed successfully"
 

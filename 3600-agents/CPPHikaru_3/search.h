@@ -68,8 +68,7 @@ private:
                   Bitboard visited_squares_opp,
                   const std::vector<Position>& potential_even,
                   const std::vector<Position>& potential_odd,
-                  std::function<double()> time_left,
-                  int root_moves_left);
+                  std::function<double()> time_left);
     
     VoronoiInfo get_voronoi(const GameState& state, Bitboard known_traps);
     

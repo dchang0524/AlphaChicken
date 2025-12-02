@@ -90,6 +90,12 @@ source ~/cpphikaru_env/bin/activate  # Activate venv if using it
 # Test one game to make sure everything works
 bash run_single_game.sh 1 Hikaru_3
 
+# Test as player A (white, goes first) - default
+bash run_single_game.sh 1 Hikaru_3 A
+
+# Test as player B (black, goes second)
+bash run_single_game.sh 1 Hikaru_3 B
+
 # Check if it worked
 ls -la batch_results/match_data/
 ls -la 3600-agents/matches/  # Should see a match JSON file
@@ -103,10 +109,18 @@ cd ~/pace_package_*
 
 # Submit 100 games as job array (uses --array=1-100)
 # The SLURM script will automatically load Python 3.10+
+
+# As player A (white, goes first) - default
 sbatch run_batch_pace_array.slurm
 
+# As player B (black, goes second)
+PLAYER=B sbatch run_batch_pace_array.slurm
+
 # Or with custom opponent:
-OPPONENT=Magnus sbatch run_batch_pace_array.slurm
+OPPONENT=Hikaru_3 sbatch run_batch_pace_array.slurm
+
+# Combine options: player B against specific opponent
+PLAYER=B OPPONENT=Hikaru_3 sbatch run_batch_pace_array.slurm
 
 # Or change number of games (edit --array=1-100 in the .slurm file, or override):
 sbatch --array=1-50 run_batch_pace_array.slurm  # Only 50 games
@@ -249,7 +263,10 @@ source ~/cpphikaru_env/bin/activate
 pip install numpy psutil
 
 # 6. Submit jobs
-sbatch run_batch_pace_array.slurm
+sbatch run_batch_pace_array.slurm  # As player A (default)
+
+# Or as player B (black):
+PLAYER=B sbatch run_batch_pace_array.slurm
 
 # 7. Wait for jobs to complete (check with squeue)
 
@@ -264,7 +281,8 @@ bash aggregate_results.sh
 - **Extract**: `tar -xzf pace_package_*.tar.gz && cd pace_package_*`
 - **Compile**: `cd 3600-agents/CPPHikaru_3 && make`
 - **Python**: `module load python/3.10` (required for code)
-- **Submit jobs**: `sbatch run_batch_pace_array.slurm`
+- **Submit jobs**: `sbatch run_batch_pace_array.slurm` (player A) or `PLAYER=B sbatch run_batch_pace_array.slurm` (player B)
 - **Check status**: `squeue -u imermigkas3`
 - **Get results**: `bash aggregate_results.sh`
+- **Player options**: `A` = white (goes first), `B` = black (goes second)
 
