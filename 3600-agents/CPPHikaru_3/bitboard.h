@@ -87,19 +87,19 @@ namespace BitboardOps {
     
     // Shift operations
     inline Bitboard shift_north(Bitboard bb) {
+    return bb >> MAP_SIZE;
+}
+
+    inline Bitboard shift_south(Bitboard bb) {
         return bb << MAP_SIZE;
     }
     
-    inline Bitboard shift_south(Bitboard bb) {
-        return bb >> MAP_SIZE;
-    }
-    
     inline Bitboard shift_east(Bitboard bb) {
-        return (bb << 1) & 0xFEFEFEFEFEFEFEFEULL; // Remove overflow
+        return (bb << 1) & 0xFEFEFEFEFEFEFEFEULL; // Remove overflow, zeros out x = 0
     }
     
     inline Bitboard shift_west(Bitboard bb) {
-        return (bb >> 1) & 0x7F7F7F7F7F7F7F7FULL; // Remove underflow
+        return (bb >> 1) & 0x7F7F7F7F7F7F7F7FULL; // Remove underflow, zeros out x = 7
     }
     
     // Get neighbors (4-directional)

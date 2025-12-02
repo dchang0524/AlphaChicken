@@ -101,47 +101,31 @@ void TrapdoorBelief::init_prob() {
 std::vector<std::vector<float>> TrapdoorBelief::get_likelihood_grid(
     Position player_pos,
     const std::vector<std::vector<float>>& kernel,
-    bool sensed) const {
-    
-    // Validate inputs
-    if (kernel.empty()) {
-        std::vector<std::vector<float>> L(map_size, std::vector<float>(map_size, sensed ? 0.0f : 1.0f));
-        return L;
-    }
-    
-    int kernel_size = static_cast<int>(kernel.size());
-    std::vector<std::vector<float>> L(map_size, std::vector<float>(map_size, sensed ? 0.0f : 1.0f));
-    
-    // Validate player position
-    if (player_pos.x < 0 || player_pos.x >= map_size || 
-        player_pos.y < 0 || player_pos.y >= map_size) {
-        return L;
-    }
-    
-    // Apply kernel
-    for (int dx = -2; dx <= 2; ++dx) {
-        for (int dy = -2; dy <= 2; ++dy) {
-            int tx = player_pos.x - dx;
-            int ty = player_pos.y - dy;
-            
-            if (tx >= 0 && tx < map_size && ty >= 0 && ty < map_size) {
-                float kernel_val = 0.0f;
-                int kx = dx + 2;
-                int ky = dy + 2;
-                if (kx >= 0 && kx < kernel_size && 
-                    ky >= 0 && ky < static_cast<int>(kernel[kx].size())) {
-                    kernel_val = kernel[kx][ky];
-                }
-                
-                if (sensed) {
-                    L[tx][ty] = kernel_val;
-                } else {
-                    L[tx][ty] = 1.0f - kernel_val;
-                }
-            }
+    bool sensed) const 
+{
+    int dim = map_size;
+    int kdim = static_cast<int>(kernel.size());
+    int radius = kdim / 2;  // 5->2, 3->1
+
+    std::vector<std::vector<float>> L(dim, std::vector<float>(dim, sensed ? 0.0f : 1.0f));
+
+    int px = player_pos.x;
+    int py = player_pos.y;
+    if (px < 0 || px >= dim || py < 0 || py >= dim) return L;
+
+    for (int dx = -radius; dx <= radius; ++dx) {
+        for (int dy = -radius; dy <= radius; ++dy) {
+            int tx = px - dx;
+            int ty = py - dy;
+            if (tx < 0 || tx >= dim || ty < 0 || ty >= dim) continue;
+
+            int kx = dx + radius;
+            int ky = dy + radius;
+            float kernel_val = kernel[kx][ky];
+
+            L[tx][ty] = sensed ? kernel_val : (1.0f - kernel_val);
         }
     }
-    
     return L;
 }
 
