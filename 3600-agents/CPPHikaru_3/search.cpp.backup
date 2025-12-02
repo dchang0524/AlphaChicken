@@ -1,0 +1,392 @@
+#include "search.h"
+#include <algorithm>
+#include <cmath>
+
+constexpr float INF = 1e8f;
+const Position NO_TRAP(-1, -1);
+
+SearchEngine::SearchEngine() {
+    search_gen = 0;
+    traps_fully_known = false;
+    trap_weight = 150.0f;
+    turd_weight = 0.0f;
+    last_root_best = Move(UP, PLAIN); // Initialize to a valid move
+}
+
+VoronoiInfo SearchEngine::get_voronoi(const GameState& state, Bitboard known_traps) {
+    uint64_t key = ZobristHash::hash(state, known_traps);
+    auto it = voronoi_cache.find(key);
+    if (it != voronoi_cache.end()) {
+        return it->second;
+    }
+    
+    VoronoiInfo vor = VoronoiAnalyzer::analyze(state, known_traps);
+    voronoi_cache[key] = vor;
+    return vor;
+}
+
+std::vector<TrapScenario> SearchEngine::build_trap_scenarios(
+    const TrapdoorBelief& trap_belief,
+    const std::vector<Position>& potential_even,
+    const std::vector<Position>& potential_odd) {
+    
+    std::vector<TrapScenario> scenarios;
+    
+    std::vector<Position> evens = potential_even;
+    std::vector<Position> odds = potential_odd;
+    
+    if (evens.empty() && odds.empty()) {
+        scenarios.push_back({Position(-1, -1), Position(-1, -1), 1.0f, false, false});
+        return scenarios;
+    }
+    
+    if (evens.empty()) {
+        evens.push_back(Position(-1, -1));
+    }
+    if (odds.empty()) {
+        odds.push_back(Position(-1, -1));
+    }
+    
+    // Calculate probabilities
+    std::vector<float> even_probs;
+    std::vector<float> odd_probs;
+    
+    if (evens.size() == 1 && evens[0] == NO_TRAP) {
+        even_probs.push_back(1.0f);
+    } else {
+        float sum_even = 0.0f;
+        for (const auto& pos : evens) {
+            float p = trap_belief.prob_at(pos);
+            even_probs.push_back(p);
+            sum_even += p;
+        }
+        if (sum_even <= 0.0f) {
+            float uniform = 1.0f / evens.size();
+            even_probs.assign(evens.size(), uniform);
+        } else {
+            for (auto& p : even_probs) {
+                p /= sum_even;
+            }
+        }
+    }
+    
+    if (odds.size() == 1 && odds[0] == NO_TRAP) {
+        odd_probs.push_back(1.0f);
+    } else {
+        float sum_odd = 0.0f;
+        for (const auto& pos : odds) {
+            float p = trap_belief.prob_at(pos);
+            odd_probs.push_back(p);
+            sum_odd += p;
+        }
+        if (sum_odd <= 0.0f) {
+            float uniform = 1.0f / odds.size();
+            odd_probs.assign(odds.size(), uniform);
+        } else {
+            for (auto& p : odd_probs) {
+                p /= sum_odd;
+            }
+        }
+    }
+    
+    // Build scenarios
+    for (size_t i = 0; i < evens.size(); ++i) {
+        for (size_t j = 0; j < odds.size(); ++j) {
+            float weight = even_probs[i] * odd_probs[j];
+            bool has_even = (evens[i].x != -1 || evens[i].y != -1);
+            bool has_odd = (odds[j].x != -1 || odds[j].y != -1);
+            scenarios.push_back({
+                evens[i],
+                odds[j],
+                weight,
+                has_even,
+                has_odd
+            });
+        }
+    }
+    
+    // Normalize weights
+    float total = 0.0f;
+    for (const auto& s : scenarios) {
+        total += s.weight;
+    }
+    if (total > 0.0f) {
+        for (auto& s : scenarios) {
+            s.weight /= total;
+        }
+    } else {
+        scenarios.clear();
+        scenarios.push_back({Position(-1, -1), Position(-1, -1), 1.0f, false, false});
+    }
+    
+    return scenarios;
+}
+
+int SearchEngine::choose_max_depth(const GameState& state) {
+    double time_left = state.player_time;
+    int base = 12; // max_depth
+    
+    if (time_left < 5) base = 4;
+    else if (time_left < 15) base = 6;
+    else if (time_left < 40) base = 7;
+    else if (time_left < 180) base = 8;
+    else if (time_left < 300) base = 10;
+    
+    VoronoiInfo vor = get_voronoi(state, 0);
+    if (vor.contested == 0) {
+        base = std::min(12, base + 2);
+    }
+    
+    return std::min(base, 12);
+}
+
+float SearchEngine::negamax(GameState& state,
+                            int depth,
+                            float alpha,
+                            float beta,
+                            const TrapdoorBelief& trap_belief,
+                            Bitboard known_traps,
+                            Position even_trap,
+                            Position odd_trap,
+                            float cum_risk,
+                            std::function<double()> time_left) {
+    
+    // Check time
+    if (time_left() < 0.01) {
+        VoronoiInfo vor = get_voronoi(state, known_traps);
+        return Evaluator::evaluate(state, vor, trap_belief) + cum_risk +
+               turd_weight * state.player_turds_left;
+    }
+    
+    // Terminal
+    if (GameRules::is_game_over(state)) {
+        int my_eggs = state.player_eggs_laid;
+        int opp_eggs = state.enemy_eggs_laid;
+        if (my_eggs > opp_eggs) return INF;
+        if (my_eggs < opp_eggs) return -INF;
+        return 0.0f;
+    }
+    
+    // Leaf
+    if (depth == 0) {
+        VoronoiInfo vor = get_voronoi(state, known_traps);
+        return Evaluator::evaluate(state, vor, trap_belief) + cum_risk +
+               turd_weight * state.player_turds_left;
+    }
+    
+    // TT lookup
+    uint64_t base_key = ZobristHash::hash(state, known_traps);
+    uint64_t scenario_key = (uint64_t(even_trap.x + 1) << 16) | (uint64_t(even_trap.y + 1) << 8) |
+                            (uint64_t(odd_trap.x + 1) << 24) | (uint64_t(odd_trap.y + 1) << 32);
+    uint64_t key = base_key ^ scenario_key;
+    
+    auto tt_it = transposition_table.find(key);
+    bool use_entry = false;
+    if (tt_it != transposition_table.end()) {
+        const TTEntry& entry = tt_it->second;
+        if (traps_fully_known || entry.gen == search_gen) {
+            use_entry = true;
+        }
+    }
+    
+    if (use_entry && tt_it->second.depth >= depth) {
+        const TTEntry& entry = tt_it->second;
+        float g_stored = entry.value;
+        float v_stored = g_stored + cum_risk;
+        
+        if (entry.flag == TT_EXACT) return v_stored;
+        if (entry.flag == TT_LOWER && v_stored > alpha) alpha = v_stored;
+        if (entry.flag == TT_UPPER && v_stored < beta) beta = v_stored;
+        if (alpha >= beta) return v_stored;
+    }
+    
+    VoronoiInfo vor = get_voronoi(state, known_traps);
+    std::vector<Move> moves = GameRules::get_valid_moves(state);
+    
+    if (moves.empty()) {
+        return -INF;
+    }
+    
+    std::vector<Move> ordered_moves = Evaluator::move_order(state, moves, vor);
+    
+    float best_val = -INF;
+    Move best_move;
+    
+    for (const Move& mv : ordered_moves) {
+        if (time_left() < 0.01) break;
+        
+        // Risk calculation
+        Position new_pos = BitboardOps::loc_after_direction(state.chicken_player_pos, mv.dir);
+        float prob_here = trap_belief.prob_at(new_pos);
+        float delta_risk = 0.0f;
+        
+        // Simplified risk check
+        if (prob_here > 0.0f) {
+            delta_risk = -trap_weight * prob_here;
+        }
+        
+        float child_cum_risk = -(cum_risk + delta_risk);
+        
+        // Apply move
+        UndoData undo = GameRules::apply_move_inplace(state, mv, even_trap, odd_trap);
+        
+        // Recurse
+        float child_val = -negamax(state, depth - 1, -beta, -alpha,
+                                   trap_belief, known_traps,
+                                   even_trap, odd_trap, child_cum_risk, time_left);
+        
+        // Undo move
+        GameRules::undo_move_inplace(state, mv, undo);
+        
+        if (child_val > best_val) {
+            best_val = child_val;
+            best_move = mv;
+        }
+        
+        if (best_val > alpha) {
+            alpha = best_val;
+        }
+        if (alpha >= beta) {
+            break;
+        }
+    }
+    
+    // Store in TT
+    float g_here = best_val - cum_risk;
+    TTFlag flag;
+    if (best_val <= alpha) {
+        flag = TT_UPPER;
+    } else if (best_val >= beta) {
+        flag = TT_LOWER;
+    } else {
+        flag = TT_EXACT;
+    }
+    
+    transposition_table[key] = {
+        g_here,
+        depth,
+        flag,
+        best_move,
+        search_gen
+    };
+    
+    return best_val;
+}
+
+Move SearchEngine::search_root(const GameState& state_const,
+                               const TrapdoorBelief& trap_belief,
+                               Bitboard known_traps,
+                               int max_depth,
+                               std::function<double()> time_left) {
+    // Work with a mutable copy
+    GameState state = state_const;
+    // Update traps_fully_known status
+    int trap_count = BitboardOps::popcount(known_traps);
+    traps_fully_known = (trap_count >= 2);
+    
+    // Update weights
+    VoronoiInfo vor_root = get_voronoi(state, known_traps);
+    trap_weight = Evaluator::get_trap_weight(state, vor_root);
+    turd_weight = Evaluator::get_turd_weight(state);
+    
+    // Update search generation
+    if (!traps_fully_known || state.player_turds_left > 0) {
+        search_gen++;
+    }
+    if (state.turn_count % 5 == 0) {
+        search_gen++;
+    }
+    
+    // Get valid moves
+    std::vector<Move> moves = GameRules::get_valid_moves(state);
+    if (moves.empty()) {
+        return Move();
+    }
+    
+    // Order moves
+    std::vector<Move> ordered_moves = Evaluator::move_order(state, moves, vor_root);
+    // Promote last root best move if valid
+    auto it = std::find(ordered_moves.begin(), ordered_moves.end(), last_root_best);
+    if (it != ordered_moves.end()) {
+        ordered_moves.erase(it);
+        ordered_moves.insert(ordered_moves.begin(), last_root_best);
+    }
+    
+    // Get potential traps
+    std::vector<Position> potential_even = trap_belief.get_potential_even(0.30f);
+    std::vector<Position> potential_odd = trap_belief.get_potential_odd(0.30f);
+    
+    std::vector<TrapScenario> scenarios = build_trap_scenarios(trap_belief, potential_even, potential_odd);
+    
+    // Iterative deepening
+    Move best_move = moves[0]; // Default to first move
+    float best_val = -INF;
+    int target_depth = choose_max_depth(state);
+    
+    for (int depth = 1; depth <= target_depth && depth <= max_depth; ++depth) {
+        if (time_left() < 0.05) break;
+        
+        float current_best_val = -INF;
+        Move current_best = best_move;
+        float alpha = -INF;
+        float beta = INF;
+        
+        for (const Move& mv : ordered_moves) {
+            if (time_left() < 0.02) break;
+            
+            float exp_val = 0.0f;
+            
+            for (const auto& scenario : scenarios) {
+                Position even_trap = scenario.has_even ? scenario.even_trap : Position(-1, -1);
+                Position odd_trap = scenario.has_odd ? scenario.odd_trap : Position(-1, -1);
+                
+                // Risk calculation
+                Position new_pos = BitboardOps::loc_after_direction(state.chicken_player_pos, mv.dir);
+                float prob_here = trap_belief.prob_at(new_pos);
+                float delta_risk = 0.0f;
+                
+                if (prob_here > 0.0f) {
+                    delta_risk = -trap_weight * prob_here;
+                }
+                
+                float child_cum_risk = -delta_risk;
+                
+                // Apply move (modify state in place)
+                UndoData undo = GameRules::apply_move_inplace(state, mv, even_trap, odd_trap);
+                
+                // Recurse
+                float val = -negamax(state, depth - 1, -beta, -alpha,
+                                    trap_belief, known_traps,
+                                    scenario.has_even ? scenario.even_trap : Position(-1, -1),
+                                    scenario.has_odd ? scenario.odd_trap : Position(-1, -1),
+                                    child_cum_risk, time_left);
+                
+                // Undo move
+                GameRules::undo_move_inplace(state, mv, undo);
+                
+                exp_val += scenario.weight * val;
+            }
+            
+            if (exp_val > current_best_val) {
+                current_best_val = exp_val;
+                current_best = mv;
+            }
+            
+            if (current_best_val > alpha) {
+                alpha = current_best_val;
+            }
+            if (alpha >= beta) {
+                break;
+            }
+        }
+        
+        if (current_best_val > best_val) {
+            best_val = current_best_val;
+            best_move = current_best;
+            last_root_best = current_best;
+        }
+    }
+    
+    return best_move;
+}
+

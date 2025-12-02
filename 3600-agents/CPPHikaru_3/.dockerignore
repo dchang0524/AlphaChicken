@@ -1,0 +1,12 @@
+*.o
+*.so
+*.dylib
+*.dll
+*.a
+build/
+__pycache__/
+*.pyc
+*.zip
+.DS_Store
+.git/
+
