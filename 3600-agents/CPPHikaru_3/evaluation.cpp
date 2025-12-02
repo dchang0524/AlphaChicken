@@ -1,5 +1,6 @@
 #include "evaluation.h"
 #include "game_rules.h"
+#include "bfs.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -7,7 +8,9 @@
 constexpr float INF = 1e8f;
 
 float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor, 
-                         const TrapdoorBelief& trap_belief) {
+                         const TrapdoorBelief& trap_belief,
+                         int root_moves_left,
+                         Bitboard known_traps) {
     if (GameRules::is_game_over(state)) {
         int my_eggs = state.player_eggs_laid;
         int opp_eggs = state.enemy_eggs_laid;
@@ -16,16 +19,92 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
         return 0.0f;
     }
     
-    int my_eggs = state.player_eggs_laid;
-    int opp_eggs = state.enemy_eggs_laid;
-    int mat_diff = my_eggs - opp_eggs;
+    // ============================================================================
+    // NEW MATERIAL HEURISTIC (CAN BE REVERTED)
+    // ============================================================================
+    // This heuristic counts material as:
+    //   my_eggs = eggs_laid + 0.8 * (territory in my voronoi that opp can reach) 
+    //           + 0.9 * (territory in my voronoi that opp can't reach)
+    // 
+    // To REVERT to old heuristic:
+    //   1. Comment out the BFS computation and territory counting loop (lines ~27-78)
+    //   2. Uncomment the OLD MATERIAL CALCULATION (lines ~80-83)
+    //   3. Remove known_traps parameter from evaluate() signature
+    //   4. Update all evaluate() calls to remove known_traps parameter
+    // ============================================================================
+    
+    // Get BFS distances to determine reachability
+    
+    // Get BFS distances to determine reachability
+    BFSResult bfs = BFS::bfs_distances_both(state, known_traps);
+    
+    // Compute my_eggs using new heuristic
+    float my_eggs_heuristic = (float)state.player_eggs_laid;
+    float opp_eggs_heuristic = (float)state.enemy_eggs_laid;
+    
+    // Count territory in my voronoi region
+    bool my_even = (state.player_even_chicken == 0);
+    bool opp_even = (state.enemy_even_chicken == 0);
+    
+    for (int x = 0; x < MAP_SIZE; ++x) {
+        for (int y = 0; y < MAP_SIZE; ++y) {
+            Position pos(x, y);
+            Bitboard pos_bb = state.pos_to_bitboard(pos);
+            
+            // Skip squares that already have eggs on them (these are "claimed")
+            if ((pos_bb & state.eggs_player) != 0 || (pos_bb & state.eggs_enemy) != 0) {
+                continue;
+            }
+            
+            int d_me = bfs.dist_me[x][y];
+            int d_opp = bfs.dist_opp[x][y];
+            
+            bool reachable_me = (d_me >= 0);
+            bool reachable_opp = (d_opp >= 0);
+            
+            bool is_even_sq = BitboardOps::is_even_square(pos);
+            
+            // Determine if square is in my voronoi region (unclaimed eggs/territory)
+            if (reachable_me && (!reachable_opp || d_me <= d_opp)) {
+                // Check parity (only count squares I can actually lay eggs on)
+                if (is_even_sq == my_even) {
+                    if (reachable_opp) {
+                        // Opponent can reach this square - weight 0.8
+                        my_eggs_heuristic += 0.8f;
+                    } else {
+                        // Opponent can't reach this square - weight 0.9
+                        my_eggs_heuristic += 0.9f;
+                    }
+                }
+            }
+            
+            // Symmetric for opponent (unclaimed eggs in opponent's voronoi)
+            if (reachable_opp && (!reachable_me || d_opp < d_me)) {
+                if (is_even_sq == opp_even) {
+                    if (reachable_me) {
+                        opp_eggs_heuristic += 0.8f;
+                    } else {
+                        opp_eggs_heuristic += 0.9f;
+                    }
+                }
+            }
+        }
+    }
+    
+    // OLD MATERIAL CALCULATION (COMMENTED OUT FOR REVERT)
+    // int my_eggs = state.player_eggs_laid;
+    // int opp_eggs = state.enemy_eggs_laid;
+    // int mat_diff = my_eggs - opp_eggs;
+    
+    // NEW: Use heuristic-based material difference
+    float mat_diff = my_eggs_heuristic - opp_eggs_heuristic;
     
     float space_score = vor.vor_score;
     
     // Phase terms
-    // Use turns_left_player (remaining turns for current player) instead of turn_count
-    // turn_count goes 0-80 (both players), MAX_TURNS is 40 (per player)
-    int moves_left = state.turns_left_player;
+    // Use root_moves_left (from root position) so weights don't change during search
+    // Only change weights between actual game turns, not during search
+    int moves_left = root_moves_left;
     int total_moves = MAX_TURNS;
     float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
     
@@ -68,7 +147,7 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
     float FRONTIER_COEFF = 0.5f * game_phase;
     
     // Apply openness to space weight (space less important when board is open)
-    float w_space = W_SPACE_MIN + (1.0f - openness) * (W_SPACE_MAX - W_SPACE_MIN);
+    float w_space = W_SPACE_MIN + (phase_mat) * (W_SPACE_MAX - W_SPACE_MIN);
     if (openness == 0.0f) {
         w_space = 0.0f;
     }

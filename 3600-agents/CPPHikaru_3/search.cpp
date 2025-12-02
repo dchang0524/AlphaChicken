@@ -123,6 +123,8 @@ std::vector<TrapScenario> SearchEngine::build_trap_scenarios(
     return scenarios;
 }
 
+// ADAPTIVE DEPTH FUNCTION COMMENTED OUT - USING FIXED DEPTH 14 FOR TESTING
+/*
 int SearchEngine::choose_max_depth(const GameState& state) {
     // TIME-BASED ADAPTIVE DEPTH
     // Try to search as deep as possible within the time budget
@@ -146,6 +148,7 @@ int SearchEngine::choose_max_depth(const GameState& state) {
     
     return base_depth;
 }
+*/
 
 float SearchEngine::negamax(GameState& state,
                             int depth,
@@ -160,12 +163,13 @@ float SearchEngine::negamax(GameState& state,
                             Bitboard visited_squares_opp,
                             const std::vector<Position>& potential_even,
                             const std::vector<Position>& potential_odd,
-                            std::function<double()> time_left) {
+                            std::function<double()> time_left,
+                            int root_moves_left) {
     
     // Check time
     if (time_left() < 0.01) {
         VoronoiInfo vor = get_voronoi(state, known_traps);
-        return Evaluator::evaluate(state, vor, trap_belief) + cum_risk +
+        return Evaluator::evaluate(state, vor, trap_belief, root_moves_left, known_traps) + cum_risk +
                turd_weight * state.player_turds_left;
     }
     
@@ -199,7 +203,7 @@ float SearchEngine::negamax(GameState& state,
     // Leaf
     if (depth == 0) {
         VoronoiInfo vor = get_voronoi(state, known_traps);
-        float base_eval = Evaluator::evaluate(state, vor, trap_belief);
+        float base_eval = Evaluator::evaluate(state, vor, trap_belief, root_moves_left, known_traps);
         float turd_term = turd_weight * state.player_turds_left;
         float final_eval = base_eval + cum_risk + turd_term;
         
@@ -313,7 +317,7 @@ float SearchEngine::negamax(GameState& state,
                                    trap_belief, known_traps,
                                    even_trap, odd_trap, child_cum_risk, 
                                    child_visited_our, child_visited_opp,
-                                   potential_even, potential_odd, time_left);
+                                   potential_even, potential_odd, time_left, root_moves_left);
         
         // Undo move (visited_squares is automatically restored since we passed by value)
         GameRules::undo_move_inplace(state, mv, undo);
@@ -360,6 +364,10 @@ Move SearchEngine::search_root(const GameState& state_const,
                                std::function<double()> time_left) {
     // Work with a mutable copy
     GameState state = state_const;
+    
+    // Capture root's moves_left for weight calculation (weights should not change during search)
+    int root_moves_left = state.turns_left_player;
+    
     // Update traps_fully_known status
     int trap_count = BitboardOps::popcount(known_traps);
     traps_fully_known = (trap_count >= 2);
@@ -394,8 +402,8 @@ Move SearchEngine::search_root(const GameState& state_const,
     }
     
     // Get potential traps
-    std::vector<Position> potential_even = trap_belief.get_potential_even(0.30f);
-    std::vector<Position> potential_odd = trap_belief.get_potential_odd(0.30f);
+    std::vector<Position> potential_even = trap_belief.get_potential_even(0.1f);
+    std::vector<Position> potential_odd = trap_belief.get_potential_odd(0.1f);
     
     std::vector<TrapScenario> scenarios = build_trap_scenarios(trap_belief, potential_even, potential_odd);
     
@@ -406,69 +414,76 @@ Move SearchEngine::search_root(const GameState& state_const,
                   << " moves:" << ordered_moves.size() << std::endl;
     }
     
+    // ADAPTIVE DEEPENING COMMENTED OUT - HARDCODED DEPTH 14 FOR TESTING
     // NOW start the time budget AFTER setup work
     // TIME BUDGET: 8 seconds per move (allocated for search only)
-    double time_budget = 8.0;
-    double time_start_abs = time_left(); // Absolute time remaining at start
-    double time_end_abs = time_start_abs - time_budget; // Absolute time when we should stop
+    // double time_budget = 8.0;
+    // double time_start_abs = time_left(); // Absolute time remaining at start
+    // double time_end_abs = time_start_abs - time_budget; // Absolute time when we should stop
     
     // Iterative deepening with time budget
     Move best_move = moves[0]; // Default to first move
     float best_val = -INF;
-    int target_depth = choose_max_depth(state);
+    // int target_depth = choose_max_depth(state);
+    const int FIXED_DEPTH = 11; // HARDCODED DEPTH FOR TESTING
     
     // Create time checker with cached time_left to reduce callback overhead
-    double cached_time_left = time_left();
-    int time_check_counter = 0;
-    auto time_checker = [&time_left, &cached_time_left, &time_check_counter, time_end_abs]() -> double {
-        // Only call time_left() every 10 checks to reduce callback overhead
-        if (++time_check_counter % 10 == 0) {
-            cached_time_left = time_left();
-        }
-        double remaining = cached_time_left - time_end_abs;
-        return remaining; // Time left relative to budget
+    // double cached_time_left = time_left();
+    // int time_check_counter = 0;
+    // auto time_checker = [&time_left, &cached_time_left, &time_check_counter, time_end_abs]() -> double {
+    //     // Only call time_left() every 10 checks to reduce callback overhead
+    //     if (++time_check_counter % 10 == 0) {
+    //         cached_time_left = time_left();
+    //     }
+    //     double remaining = cached_time_left - time_end_abs;
+    //     return remaining; // Time left relative to budget
+    // };
+    
+    // Dummy time checker for compatibility (not used with fixed depth)
+    auto time_checker = []() -> double {
+        return 1000.0; // Always return plenty of time
     };
     
     int actual_depth_reached = 0;
-    int move_counter = 0; // Track moves for less frequent time checks
     
-    for (int depth = 1; depth <= target_depth && depth <= max_depth; ++depth) {
+    // ITERATIVE DEEPENING: Search from depth 1 up to FIXED_DEPTH (not adaptive)
+    for (int depth = 1; depth <= FIXED_DEPTH && depth <= max_depth; ++depth) {
         // Always mark that we're attempting this depth
         actual_depth_reached = depth;
         
         // Check time BEFORE starting this depth (not during)
         // Always refresh to get accurate time
-        cached_time_left = time_left();
-        double time_remaining = cached_time_left - time_end_abs;
+        // cached_time_left = time_left();
+        // double time_remaining = cached_time_left - time_end_abs;
         
         // Ensure we always complete at least depth 5 (very early depths are fast)
         // This prevents cutting off too early when scenario setup is slow
-        if (depth > 5) {
-            if (time_remaining < 0.3) {
-                // If less than 0.3s remaining, stop (save time for next move)
-                break;
-            }
-        } else if (depth > 3 && time_remaining < 0.15) {
-            // For depths 4-5, be more conservative - only stop if very low on time
-            break;
-        }
+        // if (depth > 5) {
+        //     if (time_remaining < 0.3) {
+        //         // If less than 0.3s remaining, stop (save time for next move)
+        //         break;
+        //     }
+        // } else if (depth > 3 && time_remaining < 0.15) {
+        //     // For depths 4-5, be more conservative - only stop if very low on time
+        //     break;
+        // }
         
-        time_check_counter = 0;
+        // time_check_counter = 0;
         
         float current_best_val = -INF;
         Move current_best = best_move;
         float alpha = -INF;
         float beta = INF;
         
-        move_counter = 0;
+        // move_counter = 0;
         for (const Move& mv : ordered_moves) {
             // Check time budget less frequently (only every few moves to reduce overhead)
-            if (++move_counter % 3 == 0) {
-                // Refresh cache and check
-                cached_time_left = time_left();
-                double time_remaining = cached_time_left - time_end_abs;
-                if (time_remaining < 0.05) break; // Stop if less than 0.05s remaining
-            }
+            // if (++move_counter % 3 == 0) {
+            //     // Refresh cache and check
+            //     cached_time_left = time_left();
+            //     double time_remaining = cached_time_left - time_end_abs;
+            //     if (time_remaining < 0.05) break; // Stop if less than 0.05s remaining
+            // }
             
             // Risk calculation - track visited squares separately for each player
             Position new_pos = BitboardOps::loc_after_direction(state.chicken_player_pos, mv.dir);
@@ -533,7 +548,7 @@ Move SearchEngine::search_root(const GameState& state_const,
                                     scenario.has_even ? scenario.even_trap : Position(-1, -1),
                                     scenario.has_odd ? scenario.odd_trap : Position(-1, -1),
                                     child_cum_risk, child_visited_our, child_visited_opp,
-                                    potential_even, potential_odd, time_checker);
+                                    potential_even, potential_odd, time_checker, root_moves_left);
                 
                 // Undo move
                 GameRules::undo_move_inplace(state, mv, undo);
@@ -554,13 +569,13 @@ Move SearchEngine::search_root(const GameState& state_const,
             }
         }
         
+        // Update best move after completing this depth
         if (current_best_val > best_val) {
             best_val = current_best_val;
             best_move = current_best;
             last_root_best = current_best;
-            // actual_depth_reached already set at start of iteration
         }
-    }
+    } // END OF ITERATIVE DEEPENING LOOP (depths 1 to FIXED_DEPTH)
     
     // Log depth information to stderr for analysis
     // Format: DEPTH_LOG turn_count:depth_reached
@@ -617,7 +632,7 @@ Move SearchEngine::search_root(const GameState& state_const,
     // IMPORTANT: After apply_move_inplace, perspective switches!
     // Evaluator::evaluate computes from the current player's perspective (which is now the opponent)
     // So we need to negate the result to get it from our original perspective
-    float base_eval_after_opp_perspective = Evaluator::evaluate(state_after_move, vor_after, trap_belief);
+    float base_eval_after_opp_perspective = Evaluator::evaluate(state_after_move, vor_after, trap_belief, root_moves_left, known_traps);
     float base_eval_after = -base_eval_after_opp_perspective;  // Negate to get our perspective
     
     // Get egg counts (swap because perspective switched)
