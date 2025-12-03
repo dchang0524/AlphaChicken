@@ -145,41 +145,59 @@ class PlayerAgent:
         time_left_wrapper = lambda: float(time_left())
         time_left_cb = TimeLeftFunc(time_left_wrapper)
         
-        # Call C++ function
-        result = _lib.agent_play(
-            self.handle,
-            my_loc[0], my_loc[1],
-            opp_loc[0], opp_loc[1],
-            my_spawn[0], my_spawn[1],
-            opp_spawn[0], opp_spawn[1],
-            my_chicken.eggs_laid,
-            opp_chicken.eggs_laid,
-            my_chicken.turds_left,
-            opp_chicken.turds_left,
-            my_chicken.even_chicken,
-            opp_chicken.even_chicken,
-            board.turn_count,
-            board.turns_left_player,
-            board.turns_left_enemy,
-            1 if board.is_as_turn else 0,
-            board.player_time,
-            board.enemy_time,
-            eggs_player_arr,
-            eggs_enemy_arr,
-            turds_player_arr,
-            turds_enemy_arr,
-            found_traps_arr,
-            sensor_arr,
-            ctypes.byref(out_direction),
-            ctypes.byref(out_move_type),
-            time_left_cb
-        )
-        
-        if result != 0:
-            raise RuntimeError(f"C++ agent_play returned error code {result}")
-        
-        # Convert result back to (Direction, MoveType) tuple
-        direction = Direction(out_direction.value)
-        move_type = MoveType(out_move_type.value)
-        
-        return (direction, move_type)
+        # Call C++ function with error handling
+        try:
+            result = _lib.agent_play(
+                self.handle,
+                my_loc[0], my_loc[1],
+                opp_loc[0], opp_loc[1],
+                my_spawn[0], my_spawn[1],
+                opp_spawn[0], opp_spawn[1],
+                my_chicken.eggs_laid,
+                opp_chicken.eggs_laid,
+                my_chicken.turds_left,
+                opp_chicken.turds_left,
+                my_chicken.even_chicken,
+                opp_chicken.even_chicken,
+                board.turn_count,
+                board.turns_left_player,
+                board.turns_left_enemy,
+                1 if board.is_as_turn else 0,
+                board.player_time,
+                board.enemy_time,
+                eggs_player_arr,
+                eggs_enemy_arr,
+                turds_player_arr,
+                turds_enemy_arr,
+                found_traps_arr,
+                sensor_arr,
+                ctypes.byref(out_direction),
+                ctypes.byref(out_move_type),
+                time_left_cb
+            )
+            
+            if result != 0:
+                raise RuntimeError(f"C++ agent_play returned error code {result}")
+            
+            # Convert result back to (Direction, MoveType) tuple
+            direction = Direction(out_direction.value)
+            move_type = MoveType(out_move_type.value)
+            
+            # Validate move values are in valid range
+            if direction.value < 0 or direction.value > 3:
+                raise RuntimeError(f"Invalid direction returned: {direction.value}")
+            if move_type.value < 0 or move_type.value > 2:
+                raise RuntimeError(f"Invalid move_type returned: {move_type.value}")
+            
+            return (direction, move_type)
+        except Exception as e:
+            # If C++ call fails, return a safe default move instead of crashing
+            import sys
+            print(f"Error in C++ agent_play: {e}", file=sys.stderr)
+            print(f"Falling back to default move", file=sys.stderr)
+            # Return first valid move as fallback
+            valid_moves = board.get_valid_moves()
+            if valid_moves:
+                return valid_moves[0]
+            # Last resort: return a plain move in a safe direction
+            return (Direction.UP, MoveType.PLAIN)

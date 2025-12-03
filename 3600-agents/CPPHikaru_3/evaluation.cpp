@@ -49,8 +49,6 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
     float W_MAT_MIN = 5.0f;   // early
     float W_MAT_MAX = 25.0f;  // late
     
-    // Fragmentation: how bad it is if contested squares are spatially split.
-    float W_FRAG = 3.0f;
     
     // Frontier distance: how bad it is if I'm far from my most distant frontier.
     float W_FRONTIER_DIST = 1.5f;
@@ -58,30 +56,27 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
     // Frontier closeness bonus.
     float FRONTIER_COEFF = 0.5f;
     
-    // --- ENDGAME CASH OUT ---
-    // If < 8 turns left, change priorities entirely.
-    if (moves_left <= 8) {
-        // A) EGGS ARE EVERYTHING (Spike value to force laying)
-        W_MAT_MIN = 200.0f;
-        W_MAT_MAX = 200.0f;
+    // // --- ENDGAME CASH OUT ---
+    // // If < 8 turns left, change priorities entirely.
+    // if (moves_left <= 8) {
+    //     // A) EGGS ARE EVERYTHING (Spike value to force laying)
+    //     W_MAT_MIN = 200.0f;
+    //     W_MAT_MAX = 200.0f;
         
-        // B) SPACE IS WORTHLESS (Just a tiebreaker)
-        W_SPACE_MIN = 0.5f;
-        W_SPACE_MAX = 0.5f;
+    //     // B) SPACE IS WORTHLESS (Just a tiebreaker)
+    //     W_SPACE_MIN = 0.5f;
+    //     W_SPACE_MAX = 0.5f;
         
-        // C) STOP BLOCKING
-        // Set penalties to 0 so we stop worrying about the wall/enemy
-        W_FRAG = 0.0f;
-        W_FRONTIER_DIST = 0.0f;
-        FRONTIER_COEFF = 0.0f;
-    }
+    //     // C) STOP BLOCKING
+    //     // Set penalties to 0 so we stop worrying about the wall/enemy
+    //     W_FRONTIER_DIST = 0.0f;
+    //     FRONTIER_COEFF = 0.0f;
+    // }
     
     // Interpolate weights
     // Python: w_space = W_SPACE_MIN + (1 - openness) * (W_SPACE_MAX - W_SPACE_MIN)
-    float w_space = W_SPACE_MIN + (1.0f - openness) * (W_SPACE_MAX - W_SPACE_MIN);
-    if (openness == 0.0f) {
-        w_space = 0.0f;
-    }
+    float w_space = W_SPACE_MIN + (phase_mat) * (W_SPACE_MAX - W_SPACE_MIN);
+
     // Python: w_mat = W_MAT_MIN + (1.0 - phase_mat) * (W_MAT_MAX - W_MAT_MIN)
     float w_mat = W_MAT_MIN + (1.0f - phase_mat) * (W_MAT_MAX - W_MAT_MIN);
     
@@ -90,12 +85,11 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
     // Penalize more when the board is open.
     float frag_score = vor.frag_score;
     frag_score = std::max(0.0f, std::min(1.0f, frag_score));
-    float frag_term = -W_FRAG * openness * frag_score;
     
     // 2) Max contested distance from *my chicken* to any contested square.
     // Encourage being close to the whole frontier: large distance = bad.
     float max_contested_dist = (float)vor.max_contested_dist;
-    float frontier_dist_term = -FRONTIER_COEFF * (1.0f - frag_score) * max_contested_dist;
+    float frontier_dist_term = -FRONTIER_COEFF * (phase_mat) * max_contested_dist;
     
     // CLOSEST_EGG_COEFF from Python
     float PANIC_THRESHOLD = 8.0f;
@@ -109,18 +103,8 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
     float space_term = w_space * space_score;
     float mat_term = w_mat * mat_diff;
     
-    float total_eval = space_term + mat_term + frag_term + frontier_dist_term - CLOSEST_EGG_COEFF * egg_dist * 0.25f;
-    
-    // Debug logging disabled - too verbose
-    // Uncomment below and set to very high number (10000+) if needed for debugging
-    /*
-    static int eval_counter = 0;
-    if (++eval_counter % 50000 == 0) {
-        std::cerr << "EVAL_COMPONENTS my_eggs:" << my_eggs 
-                  << " opp_eggs:" << opp_eggs
-                  << " TOTAL_EVAL:" << total_eval << std::endl;
-    }
-    */
+    float total_eval = space_term + mat_term + frontier_dist_term - CLOSEST_EGG_COEFF * egg_dist * 0.25f;
+ 
     
     return total_eval;
 }
@@ -144,9 +128,6 @@ float Evaluator::get_trap_weight(const GameState& state, const VoronoiInfo& vor)
     
     float w_space = W_SPACE_MIN + phase_mat * (W_SPACE_MAX - W_SPACE_MIN);
     
-    if (openness == 0.0f) {
-        w_space = 0.0f;
-    }
     
     float w_mat = W_MAT_MIN + (1.0f - phase_mat) * (W_MAT_MAX - W_MAT_MIN);
     
@@ -155,7 +136,7 @@ float Evaluator::get_trap_weight(const GameState& state, const VoronoiInfo& vor)
 
 float Evaluator::get_turd_weight(const GameState& state) {
     // Match Python exactly: moves_left = MAX_TURNS - turn_count
-    int moves_left = MAX_TURNS - state.turn_count;
+    int moves_left = state.turns_left_player;
     int total_moves = MAX_TURNS;
     float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
     return 2.0f * phase_mat;
@@ -170,14 +151,6 @@ std::vector<Move> Evaluator::move_order(const GameState& state,
     
     int total_contested = vor.contested;
     
-    // Match Python exactly: If no contested squares: drop TURD moves
-    if (total_contested == 0) {
-        filtered.erase(
-            std::remove_if(filtered.begin(), filtered.end(),
-                [](const Move& m) { return m.move_type == TURD; }),
-            filtered.end()
-        );
-    }
     
     // Filter: if any EGG move exists, drop PLAIN moves
     bool has_egg = std::any_of(filtered.begin(), filtered.end(),

@@ -38,6 +38,12 @@ losses = 0
 ties = 0
 errors = 0
 
+# Separate real wins from opponent crash wins
+real_wins = 0  # EGGS_LAID, BLOCKING_END, etc.
+crash_wins = 0  # FAILED_INIT, CODE_CRASH, etc.
+real_losses = 0  # Actual gameplay losses
+crash_losses = 0  # We crashed/errored
+
 win_reasons = defaultdict(int)
 egg_differences = []
 
@@ -97,12 +103,24 @@ if os.path.exists(matches_data_dir):
             b_eggs = data.get("b_eggs_laid", [0])[-1] if data.get("b_eggs_laid") else 0
             
             # Determine winner (PLAYER_A = 0, PLAYER_B = 1, TIE = 2, ERROR = 3)
+            # Classify win reasons
+            crash_reasons = ["FAILED_INIT", "CODE_CRASH", "MEMORY_ERROR", "TIMEOUT"]
+            is_crash = reason in crash_reasons
+            
             if result == 0:  # PLAYER_A wins
                 wins += 1
+                if is_crash:
+                    crash_wins += 1
+                else:
+                    real_wins += 1
                 egg_differences.append(a_eggs - b_eggs)
                 win_reasons[reason] += 1
             elif result == 1:  # PLAYER_B wins
                 losses += 1
+                if is_crash:
+                    crash_losses += 1
+                else:
+                    real_losses += 1
                 egg_differences.append(b_eggs - a_eggs)
             elif result == 2:  # TIE
                 ties += 1
@@ -124,13 +142,22 @@ if os.path.exists(matches_data_dir):
     print(f"Agent: {AGENT_NAME}")
     print(f"Opponent: {OPPONENT}")
     print(f"\nWins: {wins} ({wins/processed*100:.1f}%)" if processed > 0 else "\nWins: 0")
-    print(f"Losses: {losses} ({losses/processed*100:.1f}%)" if processed > 0 else "\nLosses: 0")
-    print(f"Ties: {ties} ({ties/processed*100:.1f}%)" if processed > 0 else "\nTies: 0")
+    print(f"  Real Gameplay Wins: {real_wins}")
+    print(f"  Opponent Crash Wins: {crash_wins}")
+    print(f"\nLosses: {losses} ({losses/processed*100:.1f}%)" if processed > 0 else "\nLosses: 0")
+    print(f"  Real Gameplay Losses: {real_losses}")
+    print(f"  Agent Crash Losses: {crash_losses}")
+    print(f"\nTies: {ties} ({ties/processed*100:.1f}%)" if processed > 0 else "\nTies: 0")
     print(f"Errors: {errors} ({errors/processed*100:.1f}%)" if processed > 0 else "\nErrors: 0")
 
     if wins + losses > 0:
         win_rate = wins / (wins + losses) * 100
         print(f"\nWin Rate (excluding ties): {win_rate:.1f}%")
+    
+    if real_wins + real_losses > 0:
+        real_win_rate = real_wins / (real_wins + real_losses) * 100
+        print(f"\n*** REAL GAMEPLAY WIN RATE: {real_win_rate:.1f}% ({real_wins} wins / {real_wins + real_losses} games) ***")
+        print(f"    (Excludes opponent crashes)")
 
     if egg_differences:
         avg_diff = sum(egg_differences) / len(egg_differences)

@@ -23,13 +23,15 @@ struct UndoData {
     bool saved_is_as_turn;
     bool added_to_set;
     bool triggered_trap;
+    bool blocked_bonus_applied;  // True if +5 eggs bonus was given for blocking enemy
+    int saved_enemy_eggs_count;  // Enemy eggs before blocking bonus (for undo)
     MoveType move_type;
 };
 
 class GameRules {
 public:
     // Check if a move is valid
-    static bool is_valid_move(const GameState& state, Direction dir, MoveType move_type, Bitboard known_traps = 0);
+    static bool is_valid_move(const GameState& state, Direction dir, MoveType move_type);
     
     // Get all valid moves
     static std::vector<Move> get_valid_moves(const GameState& state, Bitboard known_traps = 0);
@@ -42,7 +44,7 @@ public:
     static void undo_move_inplace(GameState& state, const Move& move, const UndoData& undo);
     
     // Check if cell is blocked for player
-    static bool is_cell_blocked(const GameState& state, Position pos, Bitboard known_traps = 0);
+    static bool is_cell_blocked(const GameState& state, Position pos);
     
     // Check if game is over
     static bool is_game_over(const GameState& state);

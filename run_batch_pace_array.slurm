@@ -3,7 +3,7 @@
 #SBATCH --array=1-100                  # Array of 100 jobs (game IDs 1-100)
 #SBATCH --ntasks-per-node=1            # One task per job
 #SBATCH --cpus-per-task=1              # Each game uses 1 CPU
-#SBATCH --mem=4GB                      # Memory per game
+#SBATCH --mem=8GB                      # Memory per game (increased for depth 14)
 #SBATCH --time=0:20:00                 # 20 minutes per game (should be enough)
 #SBATCH -o cpphikaru-%A_%a.out         # %A = job ID, %a = array index
 #SBATCH -e cpphikaru-%A_%a.err         # Error log per job

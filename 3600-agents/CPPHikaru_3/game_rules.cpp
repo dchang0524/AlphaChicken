@@ -7,17 +7,13 @@ bool GameRules::is_in_enemy_turd_zone(const GameState& state, Position pos) {
     return (pos_bb & turd_zone) != 0;
 }
 
-bool GameRules::is_cell_blocked(const GameState& state, Position pos, Bitboard known_traps) {
+bool GameRules::is_cell_blocked(const GameState& state, Position pos) {
     if (!BitboardOps::is_valid(pos.x, pos.y)) {
         return true;
     }
     
     Bitboard pos_bb = state.pos_to_bitboard(pos);
     
-    // Blocked by known trapdoors (CRITICAL: must avoid!)
-    if ((pos_bb & known_traps) != 0) {
-        return true;
-    }
     
     // Blocked by enemy chicken
     if (pos == state.chicken_enemy_pos) {
@@ -76,7 +72,7 @@ bool GameRules::can_lay_turd_at_loc(const GameState& state, Position loc) {
     return true;
 }
 
-bool GameRules::is_valid_move(const GameState& state, Direction dir, MoveType move_type, Bitboard known_traps) {
+bool GameRules::is_valid_move(const GameState& state, Direction dir, MoveType move_type) {
     // Check turds left
     if (move_type == TURD && state.player_turds_left <= 0) {
         return false;
@@ -92,18 +88,12 @@ bool GameRules::is_valid_move(const GameState& state, Direction dir, MoveType mo
         }
     }
     
-    // Check destination
+    // Check destination - check for enemy chicken, eggs, and turd zones (but NOT known traps)
     Position new_loc = BitboardOps::loc_after_direction(my_loc, dir);
-    
-    // Can't move onto enemy chicken
-    if (new_loc == state.chicken_enemy_pos) {
+    if (is_cell_blocked(state, new_loc)) {  // Pass 0 to ignore known_traps
         return false;
     }
     
-    // Check if blocked (including known trapdoors)
-    if (is_cell_blocked(state, new_loc, known_traps)) {
-        return false;
-    }
     
     // For EGG/TURD moves, check current square
     if (move_type != PLAIN) {
@@ -136,7 +126,7 @@ std::vector<Move> GameRules::get_valid_moves(const GameState& state, Bitboard kn
         Direction dir = static_cast<Direction>(d);
         for (int mt = 0; mt < 3; ++mt) {
             MoveType move_type = static_cast<MoveType>(mt);
-            if (is_valid_move(state, dir, move_type, known_traps)) {
+            if (is_valid_move(state, dir, move_type)) {
                 moves.push_back(Move(dir, move_type));
             }
         }
@@ -160,6 +150,8 @@ UndoData GameRules::apply_move_inplace(GameState& state, const Move& move,
     undo.move_type = move_type;
     undo.added_to_set = false;
     undo.triggered_trap = false;
+    undo.blocked_bonus_applied = false;
+    undo.saved_enemy_eggs_count = state.enemy_eggs_laid;
     
     Position my_loc = state.chicken_player_pos;
     Bitboard my_loc_bb = state.pos_to_bitboard(my_loc);
@@ -207,11 +199,26 @@ UndoData GameRules::apply_move_inplace(GameState& state, const Move& move,
     std::swap(state.turns_left_player, state.turns_left_enemy);
     std::swap(state.player_time, state.enemy_time);
     
+    // Check for blocking: if the new player (former enemy) has no moves left
+    // AND they still have turns left, give +5 eggs bonus to the new enemy (former player)
+    // This matches Python's end_turn() logic: if not self.has_moves_left(enemy=True)
+    if (!has_moves_left(state) && state.turns_left_player > 0) {
+        // Give +5 eggs to enemy (the player who just made the move, now enemy after swap)
+        state.enemy_eggs_laid += 5;
+        undo.blocked_bonus_applied = true;
+    }
+    
     return undo;
 }
 
 void GameRules::undo_move_inplace(GameState& state, const Move& move, const UndoData& undo) {
-    // Reverse perspective first (undo the swap)
+    // Undo blocking bonus FIRST (before perspective swap, while still in swapped perspective)
+    // The bonus was given to enemy_eggs_laid after the perspective swap
+    if (undo.blocked_bonus_applied) {
+        state.enemy_eggs_laid -= 5;
+    }
+    
+    // Reverse perspective (undo the swap)
     std::swap(state.eggs_player, state.eggs_enemy);
     std::swap(state.turds_player, state.turds_enemy);
     std::swap(state.chicken_player_pos, state.chicken_enemy_pos);
@@ -246,9 +253,20 @@ void GameRules::undo_move_inplace(GameState& state, const Move& move, const Undo
 }
 
 bool GameRules::is_game_over(const GameState& state) {
-    // Game is over when turns run out or a winner is determined
-    // For simplicity, we check in the search if turns_left reaches 0
-    return state.turns_left_player <= 0 || state.turns_left_enemy <= 0;
+    // Game is over when:
+    // 1. Turns run out (both players exhausted their turns)
+    // 2. A player is blocked (has no moves left but still has turns left)
+    if (state.turns_left_player <= 0 || state.turns_left_enemy <= 0) {
+        return true;
+    }
+    
+    // Check if current player is blocked (no moves left but still has turns)
+    // This matches Python's chicken_blocked logic
+    if (!has_moves_left(state) && state.turns_left_player > 0) {
+        return true;
+    }
+    
+    return false;
 }
 
 bool GameRules::has_moves_left(const GameState& state) {

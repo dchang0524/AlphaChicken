@@ -35,12 +35,15 @@ else
     echo "  ⚠ No Linux .so found - will need to compile on PACE"
 fi
 
-# Copy opponent agents (at least Hikaru_3 for testing)
+# Copy opponent agents (common opponents for testing)
 echo "Copying opponent agents..."
-if [ -d "${SCRIPT_DIR}/3600-agents/Hikaru_3" ]; then
-    cp -r "${SCRIPT_DIR}/3600-agents/Hikaru_3" "${PACKAGE_DIR}/3600-agents/"
-    echo "  ✓ Included Hikaru_3"
-fi
+OPPONENTS=("Hikaru_3" "Magnus_2" "Magnus" "Bobby_5")
+for opponent in "${OPPONENTS[@]}"; do
+    if [ -d "${SCRIPT_DIR}/3600-agents/${opponent}" ]; then
+        cp -r "${SCRIPT_DIR}/3600-agents/${opponent}" "${PACKAGE_DIR}/3600-agents/"
+        echo "  ✓ Included ${opponent}"
+    fi
+done
 
 # Copy engine directory
 echo "Copying game engine..."

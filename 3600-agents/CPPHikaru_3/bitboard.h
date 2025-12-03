@@ -88,7 +88,7 @@ namespace BitboardOps {
     // Shift operations
     inline Bitboard shift_north(Bitboard bb) {
     return bb >> MAP_SIZE;
-}
+    }
 
     inline Bitboard shift_south(Bitboard bb) {
         return bb << MAP_SIZE;

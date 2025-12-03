@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <iomanip>
+#include <vector>
 
 constexpr float INF = 1e8f;
 const Position NO_TRAP(-1, -1);
@@ -409,6 +411,37 @@ Move SearchEngine::search_root(const GameState& state_const,
     std::vector<Position> potential_even = trap_belief.get_potential_even(0.25f);
     std::vector<Position> potential_odd = trap_belief.get_potential_odd(0.25f);
     
+    // Log trapdoor beliefs as 2D array for easy visualization
+    std::cerr << "TRAP_BELIEF_2D turn:" << state.turn_count << std::endl;
+    std::cerr << "   ";
+    for (int x = 0; x < MAP_SIZE; ++x) {
+        std::cerr << std::setw(5) << x;
+    }
+    std::cerr << std::endl;
+    
+    for (int y = 0; y < MAP_SIZE; ++y) {
+        std::cerr << std::setw(2) << y << " ";
+        for (int x = 0; x < MAP_SIZE; ++x) {
+            Position pos(x, y);
+            float prob = trap_belief.prob_at(pos);
+            if (prob > 0.001f) {  // Only show if > 0.1%
+                std::cerr << std::fixed << std::setprecision(2) << std::setw(5) << prob;
+            } else {
+                std::cerr << "  .  ";
+            }
+        }
+        std::cerr << std::endl;
+    }
+    
+    // Also log potential traps summary
+    std::cerr << "TRAP_POTENTIAL turn:" << state.turn_count;
+    if (!potential_even.empty()) {
+        std::cerr << " even:" << potential_even.size() << " odd:" << potential_odd.size();
+    } else {
+        std::cerr << " even:0 odd:" << potential_odd.size();
+    }
+    std::cerr << std::endl;
+    
     std::vector<TrapScenario> scenarios = build_trap_scenarios(trap_belief, potential_even, potential_odd);
     
     // Debug: log scenario count (helps diagnose performance issues)
@@ -418,85 +451,50 @@ Move SearchEngine::search_root(const GameState& state_const,
                   << " moves:" << ordered_moves.size() << std::endl;
     }
     
-    // ADAPTIVE DEEPENING COMMENTED OUT - HARDCODED DEPTH 14 FOR TESTING
-    // NOW start the time budget AFTER setup work
-    // TIME BUDGET: 8 seconds per move (allocated for search only)
-    // double time_budget = 8.0;
-    // double time_start_abs = time_left(); // Absolute time remaining at start
-    // double time_end_abs = time_start_abs - time_budget; // Absolute time when we should stop
+    // TIME MANAGEMENT (matches Python exactly)
+    // Calculate time budget: time_budget = start_time / (turns_remaining + 4.0)
+    double start_time = time_left();
+    int turns_remaining = state.turns_left_player;
+    double time_budget;
+    if (turns_remaining > 0) {
+        time_budget = start_time / (turns_remaining + 4.0);
+    } else {
+        time_budget = start_time;
+    }
+    // Cap the budget at 3.5s if start_time > 10.0
+    if (start_time > 10.0) {
+        time_budget = std::min(time_budget, 3.5);
+    }
     
     // Iterative deepening with time budget
     Move best_move = moves[0]; // Default to first move
     float best_val = -INF;
-    // int target_depth = choose_max_depth(state);
-    const int FIXED_DEPTH = 9; // Match Python max_depth = 9
+    const int FIXED_DEPTH = 12; // Fixed depth (Python uses 9, but we use 12)
     
-    // Create time checker with cached time_left to reduce callback overhead
-    // double cached_time_left = time_left();
-    // int time_check_counter = 0;
-    // auto time_checker = [&time_left, &cached_time_left, &time_check_counter, time_end_abs]() -> double {
-    //     // Only call time_left() every 10 checks to reduce callback overhead
-    //     if (++time_check_counter % 10 == 0) {
-    //         cached_time_left = time_left();
-    //     }
-    //     double remaining = cached_time_left - time_end_abs;
-    //     return remaining; // Time left relative to budget
-    // };
-    
-    // Dummy time checker for compatibility (not used with fixed depth)
-    auto time_checker = []() -> double {
-        return 1000.0; // Always return plenty of time
+    // Simple time checker (matches Python: checks time_left() < 0.05)
+    auto time_checker = [&time_left]() -> double {
+        return time_left();
     };
     
     int actual_depth_reached = 0;
     
-    // ITERATIVE DEEPENING: Search from depth 1 up to FIXED_DEPTH (not adaptive)
-    // Only update best_move if depth completes successfully (don't use incomplete results)
+    // ITERATIVE DEEPENING: Search from depth 1 up to FIXED_DEPTH (matches Python)
     for (int depth = 1; depth <= FIXED_DEPTH && depth <= max_depth; ++depth) {
-        // Track if this depth completed successfully
-        bool depth_completed = true;
+        // Check time (matches Python: if time_left() < 0.05: break)
+        if (time_left() < 0.05) {
+            break;
+        }
         
-        // Always mark that we're attempting this depth
         actual_depth_reached = depth;
-        
-        // Check time BEFORE starting this depth (not during)
-        // Always refresh to get accurate time
-        // cached_time_left = time_left();
-        // double time_remaining = cached_time_left - time_end_abs;
-        
-        // Ensure we always complete at least depth 5 (very early depths are fast)
-        // This prevents cutting off too early when scenario setup is slow
-        // if (depth > 5) {
-        //     if (time_remaining < 0.3) {
-        //         // If less than 0.3s remaining, stop (save time for next move)
-        //         break;
-        //     }
-        // } else if (depth > 3 && time_remaining < 0.15) {
-        //     // For depths 4-5, be more conservative - only stop if very low on time
-        //     break;
-        // }
-        
-        // time_check_counter = 0;
         
         float current_best_val = -INF;
         Move current_best = best_move;
         float alpha = -INF;
         float beta = INF;
         
-        // move_counter = 0;
-        bool all_moves_searched = true;
         for (const Move& mv : ordered_moves) {
-            // Check time budget less frequently (only every few moves to reduce overhead)
-            // if (++move_counter % 3 == 0) {
-            //     // Refresh cache and check
-            //     cached_time_left = time_left();
-            //     double time_remaining = cached_time_left - time_end_abs;
-            //     if (time_remaining < 0.05) {
-            //         all_moves_searched = false; // Mark incomplete if we break due to time
-            //         depth_completed = false;
-            //         break; // Stop if less than 0.05s remaining
-            //     }
-            // }
+            // Python checks time at start of depth iteration, not inside move loop
+            // But negamax will check time internally, so we don't need to check here
             
             // Risk calculation - track visited squares separately for each player
             Position new_pos = BitboardOps::loc_after_direction(state.chicken_player_pos, mv.dir);
@@ -578,34 +576,18 @@ Move SearchEngine::search_root(const GameState& state_const,
                 alpha = current_best_val;
             }
             if (alpha >= beta) {
-                break; // Alpha-beta cutoff - this is normal, depth still completes
-                // Note: We break here, but all_moves_searched will be false
-                // However, alpha-beta cutoffs mean we found a provably best move, so this is OK
+                break; // Alpha-beta cutoff
             }
         }
         
-        // Check if we completed searching all moves OR found provable best via alpha-beta
-        // If we broke early due to time (not alpha-beta), don't use incomplete results
-        if (!all_moves_searched && alpha < beta) {
-            // We didn't finish all moves AND didn't prove a best move via alpha-beta
-            // This means incomplete search (likely time cutoff) - don't use this depth's results
-            depth_completed = false;
-        }
-        // Note: If we broke due to alpha >= beta, we have a provable best move, so depth is valid
-        // If we searched all moves, depth is also valid
+        // Update best move (matches Python exactly: always update, no check)
+        // Python: best_val = val; best_move = mv; self.last_root_best = mv
+        best_val = current_best_val;
+        best_move = current_best;
+        last_root_best = current_best;
         
-        // Only update best move if depth completed successfully
-        // If we broke early due to time, keep previous best_move
-        if (depth_completed && current_best_val > best_val) {
-            best_val = current_best_val;
-            best_move = current_best;
-            last_root_best = current_best;
-        }
-        
-        // If depth didn't complete, break and return best_move from previous depth
-        if (!depth_completed) {
-            break;
-        }
+        // Python doesn't have a depth_completed check - it just continues to next depth
+        // If time runs out during a depth, the next iteration will break at the top
     } // END OF ITERATIVE DEEPENING LOOP (depths 1 to FIXED_DEPTH)
     
     // Log depth information to stderr for analysis
