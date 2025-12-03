@@ -28,12 +28,6 @@ private:
     static bool initialized;
     
     static uint64_t random_uint64(uint64_t& seed);
-    
-    // Add turn hash table
-    static uint64_t turn_table[MAX_TURNS + 1];
-    
-public:
-    static uint64_t get_turn_hash(int turn);
 };
 
 #endif // ZOBRIST_H

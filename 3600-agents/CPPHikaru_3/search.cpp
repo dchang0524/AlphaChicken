@@ -11,7 +11,7 @@ const Position NO_TRAP(-1, -1);
 SearchEngine::SearchEngine() {
     search_gen = 0;
     traps_fully_known = false;
-    trap_weight = 150.0f;
+    trap_weight = 100.0f;
     turd_weight = 0.0f;
     last_root_best = Move(UP, PLAIN); // Initialize to a valid move
 }
@@ -126,7 +126,7 @@ std::vector<TrapScenario> SearchEngine::build_trap_scenarios(
 }
 
 // ADAPTIVE DEPTH FUNCTION COMMENTED OUT - USING FIXED DEPTH 14 FOR TESTING
-/*
+
 int SearchEngine::choose_max_depth(const GameState& state) {
     // TIME-BASED ADAPTIVE DEPTH
     // Try to search as deep as possible within the time budget
@@ -150,7 +150,7 @@ int SearchEngine::choose_max_depth(const GameState& state) {
     
     return base_depth;
 }
-*/
+
 
 float SearchEngine::negamax(GameState& state,
                             int depth,
@@ -227,9 +227,12 @@ float SearchEngine::negamax(GameState& state,
     
     // TT lookup
     uint64_t base_key = ZobristHash::hash(state, known_traps);
+    // Add turn hash to key for TT (but not for Voronoi cache)
+    uint64_t tt_key = base_key ^ ZobristHash::get_turn_hash(state.turns_left_player);
+    
     uint64_t scenario_key = (uint64_t(even_trap.x + 1) << 16) | (uint64_t(even_trap.y + 1) << 8) |
                             (uint64_t(odd_trap.x + 1) << 24) | (uint64_t(odd_trap.y + 1) << 32);
-    uint64_t key = base_key ^ scenario_key;
+    uint64_t key = tt_key ^ scenario_key;
     
     auto tt_it = transposition_table.find(key);
     bool use_entry = false;
@@ -273,9 +276,9 @@ float SearchEngine::negamax(GameState& state,
         // After move: perspective switches, so is_as_turn flips
         Position new_pos = BitboardOps::loc_after_direction(state.chicken_player_pos, mv.dir);
         
-        // TEMPORARILY DISABLE VISITED SQUARES TRACKING TO MATCH PYTHON
-        // Python doesn't track visited squares, so it counts risk every time
-        // This matches Python's behavior exactly
+        // Check if we've already visited this square in the current search path
+        bool already_visited = BitboardOps::get_bit(visited_squares_our, new_pos.x, new_pos.y);
+        
         float delta_risk = 0.0f;
         
         // Only add trapdoor risk if square is NOT in potential trap lists (matches Python logic)
@@ -300,8 +303,8 @@ float SearchEngine::negamax(GameState& state,
                 }
             }
             
-            // Only count risk if square is NOT in potential list (matches Python)
-            if (!in_potential_list) {
+            // Only count risk if square is NOT in potential list AND NOT already visited
+            if (!in_potential_list && !already_visited) {
                 float prob_here = trap_belief.prob_at(new_pos);
                 if (prob_here > 0.0f) {
                     delta_risk = -trap_weight * prob_here;
@@ -311,9 +314,15 @@ float SearchEngine::negamax(GameState& state,
         
         float child_cum_risk = -(cum_risk + delta_risk);
         
-        // TEMPORARILY DISABLE: Don't update visited sets (match Python behavior)
-        Bitboard child_visited_our = visited_squares_our;
-        Bitboard child_visited_opp = visited_squares_opp;
+        // Update visited sets for recursion
+        // Add new position to our visited set
+        Bitboard updated_visited_our = BitboardOps::set_bit(visited_squares_our, new_pos.x, new_pos.y);
+        
+        // For recursive call, perspective switches:
+        // - child's "our" visited set = current "opp" visited set
+        // - child's "opp" visited set = updated "our" visited set
+        Bitboard child_visited_our = visited_squares_opp;
+        Bitboard child_visited_opp = updated_visited_our;
         
         // Apply move (this will switch perspective)
         UndoData undo = GameRules::apply_move_inplace(state, mv, even_trap, odd_trap);
@@ -387,9 +396,9 @@ Move SearchEngine::search_root(const GameState& state_const,
     if (!traps_fully_known || state.player_turds_left > 0) {
         search_gen++;
     }
-    if (state.turn_count % 5 == 0) {
-        search_gen++;
-    }
+    // if (state.turn_count % 5 == 0) {
+    //     search_gen++;
+    // }
     
     // Get valid moves
     std::vector<Move> moves = GameRules::get_valid_moves(state, known_traps);
@@ -503,7 +512,9 @@ Move SearchEngine::search_root(const GameState& state_const,
             Bitboard root_visited_our = BitboardOps::set_bit(0, state.chicken_player_pos.x, state.chicken_player_pos.y);
             Bitboard root_visited_opp = 0; // Opponent hasn't moved yet
             
-            // TEMPORARILY DISABLE VISITED SQUARES TRACKING TO MATCH PYTHON
+            // Check if we've already visited this square (unlikely at root unless we move back to start, but good for consistency)
+            bool already_visited = BitboardOps::get_bit(root_visited_our, new_pos.x, new_pos.y);
+            
             float delta_risk_at_root = 0.0f;
             
             // Only add trapdoor risk if square is NOT in potential trap lists (to avoid double-counting with scenarios)
@@ -528,8 +539,8 @@ Move SearchEngine::search_root(const GameState& state_const,
                     }
                 }
                 
-                // Only count risk if square is NOT in potential list (matches Python logic)
-                if (!in_potential_list) {
+                // Only count risk if square is NOT in potential list AND NOT already visited
+                if (!in_potential_list && !already_visited) {
                     float prob_here = trap_belief.prob_at(new_pos);
                     if (prob_here > 0.0f) {
                         delta_risk_at_root = -trap_weight * prob_here;
@@ -538,8 +549,13 @@ Move SearchEngine::search_root(const GameState& state_const,
             }
             
             // Add new position to our visited set for child searches
-            Bitboard child_visited_our = BitboardOps::set_bit(root_visited_our, new_pos.x, new_pos.y);
-            Bitboard child_visited_opp = root_visited_opp; // Opponent's visited set stays empty at root level
+            Bitboard updated_root_visited_our = BitboardOps::set_bit(root_visited_our, new_pos.x, new_pos.y);
+            
+            // For recursive call, perspective switches:
+            // - child's "our" visited set = root's "opp" visited set (empty)
+            // - child's "opp" visited set = updated root's "our" visited set
+            Bitboard child_visited_our = root_visited_opp;
+            Bitboard child_visited_opp = updated_root_visited_our;
             
             float exp_val = 0.0f;
             

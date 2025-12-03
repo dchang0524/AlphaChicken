@@ -3,7 +3,6 @@
 #include <cstdlib>
 
 uint64_t ZobristHash::table[MAP_SIZE][MAP_SIZE][Z_NUM_FEATURES];
-uint64_t ZobristHash::turn_table[MAX_TURNS + 1];
 uint64_t ZobristHash::side_to_move = 0;
 bool ZobristHash::initialized = false;
 
@@ -28,19 +27,7 @@ void ZobristHash::init(int dim, uint64_t seed) {
     }
     
     side_to_move = random_uint64(rng_state);
-    
-    // Initialize turn table
-    for (int i = 0; i <= MAX_TURNS; ++i) {
-        turn_table[i] = random_uint64(rng_state);
-    }
-    
     initialized = true;
-}
-
-uint64_t ZobristHash::get_turn_hash(int turn) {
-    if (!initialized) init(MAP_SIZE);
-    if (turn < 0 || turn > MAX_TURNS) return 0;
-    return turn_table[turn];
 }
 
 uint64_t ZobristHash::hash(const GameState& state, Bitboard known_traps) {

@@ -1,0 +1,46 @@
+#include "agent_wrapper.h"
+
+CPPHikaruAgent::CPPHikaruAgent(int map_size) 
+    : trap_belief(map_size), known_traps(0), traps_fully_known(false) {
+}
+
+void CPPHikaruAgent::update_known_traps(const std::vector<Position>& found_traps) {
+    for (const auto& pos : found_traps) {
+        if (BitboardOps::is_valid(pos.x, pos.y)) {
+            known_traps = BitboardOps::set_bit(known_traps, pos.x, pos.y);
+            trap_belief.set_trapdoor(pos);
+        }
+    }
+    traps_fully_known = (found_traps.size() >= 2);
+}
+
+void CPPHikaruAgent::reset() {
+    trap_belief.reset();
+    known_traps = 0;
+    traps_fully_known = false;
+}
+
+std::pair<int, int> CPPHikaruAgent::play(
+    const GameState& state,
+    const std::vector<std::pair<bool, bool>>& sensor_data,
+    Bitboard known_traps_override,
+    std::function<double()> time_left) {
+    
+    Position my_pos = state.chicken_player_pos;
+    Position opp_pos = state.chicken_enemy_pos;
+    
+    // Update beliefs from sensors
+    trap_belief.update(my_pos, sensor_data);
+    trap_belief.mark_safe(my_pos);
+    trap_belief.mark_safe(opp_pos);
+    
+    // Use provided known_traps
+    Bitboard traps_to_use = (known_traps_override != 0) ? known_traps_override : known_traps;
+    
+    // Search for best move (max_depth parameter is now just a safety cap)
+    // Actual depth is determined adaptively in search_root based on turn_count
+    Move best_move = search_engine.search_root(state, trap_belief, traps_to_use, 25, time_left);
+    
+    return std::make_pair(static_cast<int>(best_move.dir), static_cast<int>(best_move.move_type));
+}
+
