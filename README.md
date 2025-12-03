@@ -389,3 +389,13 @@ The implementation is split between **C++** and optimized **Python**:
 This setup gives:
 - C++-level performance on the critical path,
 - Python-level flexibility for iterating on heuristics and modeling.
+- 
+
+## Known Issues
+
+The biggest problem with the bot is that it won't avoid trapdoors even if it thinks there is a high probability that there is trapdoor in that square because we are simply taking the move that maximizes the expected value of the score. Since we're taking the best expected value,
+if we have a move that has a 0.5 probability of +20 and 0.5 probability of -10, and a move that is +9 with probability 1 it will pick the risky move, which is not what we want. Some potential fixes we thought of that we haven't implemented yet are: 
+- Instead of maximizing E[score], maximize E[f(score)], where f is concave and increasing. A good function would probably be f(x) = sign(x) * sqrt(|x|).
+- We could give some sort of penalty for moves with high variance in scores.
+- We could give extra weight to lines with negative scores.
+- We could cap off the maximum score of winning lines.
