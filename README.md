@@ -15,41 +15,43 @@ Scaled lightly to avoid early-game distortion.
 
 Estimate the number of eggs each side can still collect:
 
-Eggs in my Voronoi region (I’m strictly closer).
+- Eggs in my Voronoi region (I’m strictly closer).
 
-Eggs in contested regions, weighted by distance and likelihood of winning the race.
+- Eggs in contested regions, weighted by distance and likelihood of winning the race.
 
-Eggs in my unreachable-by-opponent region, weighted higher.
+- Eggs in my unreachable-by-opponent region, weighted higher.
 
-Capped by available moves (min(moves_left/2, egg_count)).
+- Capped by available moves (min(moves_left/2, egg_count)).
 
 This approximates the upper bound on future material.
-(Potential Improvement: Build a probabilisitc model based on the difference of the distance to that square from both players)
+
+Potential Improvements: Build a probabilisitc model based on the difference of the distance to that square from both players to define ownership. Create a better approximation for eggs you can collect given the number of moves, possibly by computing each connected component of unclaimed eggs and then calculating the distances between each component.
 
 ### 1.3 Distance-to-Egg Bonus (Endgame)
 
 When the nearest egg is far and alpha–beta cannot see the capture sequence:
 
-Add a small bonus inversely proportional to distance.
+- Add a small bonus inversely proportional to distance.
 
-Allows search to choose lines that actually reach eggs later.
+- Allows search to choose lines that actually reach eggs later.
 
 ## 2. Spatial Control & Region Structure
 ### 2.1 Voronoi Space Difference
 
 The core spatial metric:
 
-Compute per-player Voronoi regions (distance-only BFS).
+Compute per-player Voronoi regions (distance-only BFS). 
+
+A square where I can reach first before my opponent belongs to my Voronoi region. 
+
+Technically, if there were no trapdoors or turn limit, you can't overcome this space difference. 
 
 Reward:
 
-Larger owned region
-
-Better frontier control
-
-Strategic positions (e.g., central reachability)
-
-Voronoi naturally encodes mobility, territory, and long-term potential eggs.
+- Larger owned region
+- Better frontier control
+- Strategic positions (e.g., central reachability)
+- Voronoi naturally encodes mobility, territory, and long-term potential eggs.
 
 ### 2.2 Contested Squares
 
@@ -62,11 +64,9 @@ Where turds and tempo actually change the game
 
 AlphaChicken evaluates:
 
-Count of contested squares
-
-My distance to each
-
-Opponent’s distance
+- Count of contested squares
+- My distance to each
+- Opponent’s distance(which is equal or differs by 1, by definition)
 → Pushes toward controlling relevant “front lines.”
 
 ### 2.3 Contested Region Significance
@@ -75,12 +75,9 @@ Not all contested regions are equally valuable.
 
 Define region significance:
 
-significance = (# eggs in this region) / (total remaining eggs)
+**significance** = (# eggs in this region) / (total remaining eggs)
 
-
-Score contribution:
-
-significance × distance × (1 - progression_factor)
+Apply this to 2.2.
 
 
 This prevents the bot from over-fighting over meaningless regions, one of the biggest weaknesses of naïve Voronoi-based bots.
@@ -89,9 +86,9 @@ This prevents the bot from over-fighting over meaningless regions, one of the bi
 
 Board structure metrics:
 
-Openness = (# contested squares) / 8
+**Openness** = (# contested squares) / 8
 
-Fragmentation = Manhattan distance between extreme frontier squares
+**Fragmentation** = Manhattan distance between extreme frontier squares
 
 Used only to scale dynamic weights (see §5).
 Fragmented boards → fight only in key regions
@@ -108,13 +105,13 @@ Weighted penalty added to leaf evaluations
 
 Accounts for:
 
-Sensor readings
-
-Equidistant trapdoor ambiguity
-
-Movement through high-risk lines
+- Sensor readings
+- Equidistant trapdoor ambiguity
+- Movement through high-risk lines
 
 This prevents superficially “good” lines that are suicidal in reality.
+
+If steping on a known trapdoor, we can directly simulate its effects.
 
 ### 3.2 Global Trap Hazard Term
 
@@ -123,7 +120,7 @@ A small constant factor:
 trap_weight × (4 + 8 × openness × voronoi_factor × dist_from_start / 2)
 
 
-Represents long-run exposure to uncertain tiles.
+Represents the weight of penalty for 3.1.
 
 ## 4. Turd Management
 ### 4.1 Positive Turd Savings
@@ -136,13 +133,13 @@ Reward keeping unused turds (weight × turds_left)
 
 A turd is penalized if it contributes nothing:
 
-Surrounded entirely by unreachable squares
+- Surrounded entirely by unreachable squares
 
-Blocks space already fully owned
+- Blocks space already fully owned
 
-Trapped inside self-contained walls
+- Trapped inside self-contained walls
 
-Or reinforces a region with redundant coverage
+- Or reinforces a region with redundant coverage
 
 Cheap approximate tests avoid expensive recomputation.
 
@@ -150,13 +147,15 @@ Cheap approximate tests avoid expensive recomputation.
 
 Reward “hard territory” created by turds:
 
-Squares opponent can no longer reach
+- Squares opponent can no longer reach
 
-Reductions in opponent Voronoi region
+- Reductions in opponent Voronoi region
 
-Creation of cutoff regions
+- Creation of cutoff regions
 
 Blocking is essentially “permanent Voronoi.”
+
+This is also done by giving higher weight to blocked eggs in Potential Egg Gain. 
 
 ## 5. Dynamic Weighting
 
@@ -164,39 +163,28 @@ Game phase changes which heuristics matter.
 
 ### Early Game
 
-Space > Material
-
-Expansion and frontier contests matter most
-
-Avoid early corner-egg greed (common MAX bot weakness)
+- Space > Material
+- Expansion and frontier contests matter most
+- Avoid early corner-egg greed (common MAX TA bot weakness)
 
 ### Midgame
 
-Contested region significance dominates
-
-Turd efficiency becomes relevant
-
-Trapdoor risk sharply increases impact
+- Contested region significance dominates
+- Trapdoor risk sharply increases impact
 
 ### Late Game
-
-Material > Space
-
-Distance-to-egg bonus active
-
-Endgame egg races decided mostly by distances & remaining moves
+- Material > Space
+- Distance-to-egg bonus active
+- Endgame egg races decided mostly by distances & remaining moves
 
 ### Transitions
 
 Weight transitions depend on:
+- Turn number
+- Openness
+- Fragmentation
+- Remaining eggs
 
-Turn number
-
-Openness
-
-Fragmentation
-
-Remaining eggs
 A linear + structural blend is used for stable phase-change behavior.
 
 ## 6. Loss Prevention Module
@@ -251,7 +239,7 @@ Occasional turd inefficiency
 → Needs better redundancy detection.
 
 Trapdoor-induced volatility
-→ Voronoi boundaries jump under small positional changes.
+→ Voronoi boundaries jump under small positional changes. This makes techniques like futility and aspiration windows impractical to implement.
 
 # Algorithmic Overview
 
