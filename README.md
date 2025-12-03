@@ -391,3 +391,11 @@ if we have a move that has a 0.5 probability of +20 and 0.5 probability of -10, 
 - We could give some sort of penalty for moves with high variance in scores.
 - We could give extra weight to lines with negative scores.
 - We could cap off the maximum score of winning lines.
+
+# Agent History
+1. Morphy
+2. Tal
+3. Bobby
+4. Magnus
+5. Hikaru
+6. CPPHikaru
