@@ -266,8 +266,6 @@ The core search is a depth-limited **negamax** (minimax) with alpha–beta pruni
 
 This search runs continuously under a strict time budget, so almost all other components are designed around making each node as cheap as possible.
 
----
-
 ## Iterative Deepening & Time Management
 
 Search is driven by **iterative deepening**:
@@ -280,8 +278,6 @@ This gives:
 - Anytime behavior (always have a valid move),
 - Better move ordering over time (feeding TT + history),
 - Graceful degradation instead of random timeouts.
-
----
 
 ## Transposition Table (TT) & Zobrist Hashing
 
@@ -309,7 +305,6 @@ Two independent Zobrist systems are maintained:
 
 This separation avoids recomputing spatial structures unnecessarily while keeping TT keys focused on true game state.
 
----
 
 ## Trapdoor Belief Model (HMM-style)
 
@@ -361,8 +356,6 @@ This lets the engine trade off:
 - Safe but lower-reward ones,
 in a mathematically consistent way rather than assuming worst-case everything.
 
----
-
 ## Bitboards & Array-Based BFS
 
 The board is represented internally using **bitboards**:
@@ -384,8 +377,6 @@ For **Voronoi and reachability**, the engine uses **array-based BFS** instead of
 - This is significantly faster and more cache-friendly than set-based BFS, which matters because Voronoi and distance fields are recomputed constantly.
 
 Bitboards + array BFS make spatial computations fast enough to fit deep search under tight time constraints.
-
----
 
 ## Implementation & Optimization Stack
 
