@@ -1,4 +1,4 @@
-# AlphaChicken Heuristic Overview
+# Heuristic Overview
 
 AlphaChicken’s evaluation function approximates the expected final egg difference by combining spatial control, reachability analysis, trapdoor risk modeling, and dynamic weighting tied to game phase. It integrates these terms directly inside alpha–beta search so that path-dependent factors (like trapdoor risk) are accounted for consistently across the search tree.
 
