@@ -184,13 +184,7 @@ float SearchEngine::negamax(GameState& state,
         int my_eggs = state.player_eggs_laid;
         int opp_eggs = state.enemy_eggs_laid;
         float terminal_eval;
-        if (my_eggs > opp_eggs) {
-            terminal_eval = INF;
-        } else if (my_eggs < opp_eggs) {
-            terminal_eval = -INF;
-        } else {
-            terminal_eval = 0.0f;
-        }
+        terminal_eval = (my_eggs - opp_eggs) * 1000.0f;
         
         // Debug logging at terminal nodes (disabled - too verbose)
         // Uncomment below if needed for debugging

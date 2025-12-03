@@ -12,9 +12,7 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
     if (GameRules::is_game_over(state)) {
         int my_eggs = state.player_eggs_laid;
         int opp_eggs = state.enemy_eggs_laid;
-        if (my_eggs > opp_eggs) return INF;
-        if (my_eggs < opp_eggs) return -INF;
-        return 0.0f;
+        return (my_eggs - opp_eggs) * 1000.0f;
     }
     
     // --- Basic features: material and space ---
