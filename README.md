@@ -24,6 +24,7 @@ Eggs in my unreachable-by-opponent region, weighted higher.
 Capped by available moves (min(moves_left/2, egg_count)).
 
 This approximates the upper bound on future material.
+(Potential Improvement: Build a probabilisitc model based on the difference of the distance to that square from both players)
 
 ### 1.3 Distance-to-Egg Bonus (Endgame)
 
