@@ -128,27 +128,42 @@ std::vector<TrapScenario> SearchEngine::build_trap_scenarios(
 // ADAPTIVE DEPTH FUNCTION COMMENTED OUT - USING FIXED DEPTH 14 FOR TESTING
 
 int SearchEngine::choose_max_depth(const GameState& state) {
-    // TIME-BASED ADAPTIVE DEPTH
-    // Try to search as deep as possible within the time budget
-    // Set a high max depth cap, actual depth will be limited by time budget
-    double time_left = state.player_time;
-    
-    // If time is very low, use minimal depth
-    if (time_left < 5) return 4;
-    if (time_left < 15) return 6;
-    if (time_left < 40) return 7;
-    
-    // With 8 seconds per move budget, allow deeper searches
-    // The iterative deepening will automatically stop when time runs out
-    int base_depth = 25; // High cap, will be cut off by time budget
-    
-    // Bonus depth if not contested (less moves to consider)
-    VoronoiInfo vor = get_voronoi(state, 0);
-    if (vor.contested == 0) {
-        base_depth = 30; // Even higher if position is quiet
+    double time_left  = state.player_time;       // seconds remaining on our clock
+    int    turns_left = state.turns_left_player; // how many of *our* moves remain
+
+    // --- 1. Base depth from turns_left ---
+    // Default: 12 plies
+    int depth = 12;
+    if (turns_left <= 10) {
+        depth = 20;
+    } else if (turns_left <= 20) {
+        depth = 15;
+    } else if (turns_left <= 30) {
+        depth = 14;
     }
-    
-    return base_depth;
+
+    // --- 2. Time-based reductions ---
+    // If we're low on time, cut depth aggressively.
+    // These are subtractive (as you requested), then clamped.
+
+    if (time_left < 5.0) {
+        // Emergency: we're in time trouble, slash depth hard
+        depth -= 8;   // e.g. 20 -> 12, 15 -> 7, 13 -> 5
+    } else if (time_left < 10.0) {
+        depth -= 5;   // moderate trouble
+    } else if (time_left < 20.0) {
+        depth -= 3;   // mild reduction
+    } else if (time_left < 40.0) {
+        depth -= 2;   // tiny haircut, just to be safe
+    }  else if (time_left < 180.0) {
+        depth -= 1;   // tiny haircut, just to be safe
+    }
+    // If time_left >= 40, keep the full depth.
+
+    // --- 3. Clamp to reasonable bounds ---
+    if (depth < 4)  depth = 4;   // never go completely braindead
+    if (depth > 25) depth = 25;  // hard cap to avoid pathological cases
+    return depth;
 }
 
 
@@ -472,7 +487,7 @@ Move SearchEngine::search_root(const GameState& state_const,
     // Iterative deepening with time budget
     Move best_move = moves[0]; // Default to first move
     float best_val = -INF;
-    const int FIXED_DEPTH = 12; // Fixed depth (Python uses 9, but we use 12)
+    const int FIXED_DEPTH = choose_max_depth(state); // Fixed depth (Python uses 9, but we use 12)
     
     // Simple time checker (matches Python: checks time_left() < 0.05)
     auto time_checker = [&time_left]() -> double {
