@@ -251,3 +251,150 @@ Occasional turd inefficiency
 
 Trapdoor-induced volatility
 → Voronoi boundaries jump under small positional changes.
+
+# Algorithmic Overview
+
+AlphaChicken combines classic game-tree search with probabilistic modeling and low-level performance tricks to handle the noisy, trapdoor-heavy dynamics of ChickenFight.
+
+## Search Framework: Negamax / Minimax
+
+The core search is a depth-limited **negamax** (minimax) with alpha–beta pruning:
+
+- Uniform scoring: positions are always evaluated from the current player’s perspective and sign-flipped on recursion.
+- Alpha–beta pruning: branches that cannot improve the current best value are cut early.
+- Loss-prevention hooks: terminal or provably-losing positions are detected and given large negative scores to stabilize decision-making.
+
+This search runs continuously under a strict time budget, so almost all other components are designed around making each node as cheap as possible.
+
+---
+
+## Iterative Deepening & Time Management
+
+Search is driven by **iterative deepening**:
+
+- Start at shallow depth (e.g., 1–2 plies), then repeatedly increase depth as long as time allows.
+- The best move from the previous iteration is used as the first candidate in the next iteration for strong move ordering.
+- Time checks are baked into the search loop; when time is nearly exhausted, the engine immediately returns the best result from the last completed depth.
+
+This gives:
+- Anytime behavior (always have a valid move),
+- Better move ordering over time (feeding TT + history),
+- Graceful degradation instead of random timeouts.
+
+---
+
+## Transposition Table (TT) & Zobrist Hashing
+
+AlphaChicken uses a **transposition table** to cache search results for repeated positions:
+
+- Each node stores:
+  - Zobrist hash
+  - Best move
+  - Search depth
+  - Node type (exact / lower bound / upper bound)
+  - Score in a risk-aware domain
+  - Metadata for when it was computed (for re-use across iterations)
+
+### Zobrist Hashing (Board vs Voronoi)
+
+Two independent Zobrist systems are maintained:
+
+1. **Board Hash**
+   - Encodes positions of both players, eggs, turds, known trapdoors, side-to-move, and turn.
+   - Used as the TT key; updated incrementally when applying moves.
+
+2. **Voronoi / Eval Hash**
+   - Encodes derived features related to Voronoi regions, frontiers, and other expensive-to-recompute spatial features.
+   - Allows caching and reusing evaluation-related structures without fully recomputing BFS for every node.
+
+This separation avoids recomputing spatial structures unnecessarily while keeping TT keys focused on true game state.
+
+---
+
+## Trapdoor Belief Model (HMM-style)
+
+Trapdoors are modeled with a **belief distribution over squares**, updated in a Bayesian fashion. The belief state behaves like a small Hidden Markov Model over “trapdoor presence” at each tile, with these inputs:
+
+- **Positive signals**  
+  E.g., hearing/feeling near a trapdoor. These update nearby tiles according to a fixed sensor kernel.
+
+- **Negative information (absence of signals)**  
+  If we (or the opponent) stand in a region where a trapdoor *would* have produced a signal but none occurred, we down-weight those nearby tiles. Absence of signal is still information.
+
+- **Our movement**  
+  - When we step on a square and don’t fall, that square’s probability drops (often to zero, depending on rules).
+  - Our path through the board carves out “safe corridors” where trapdoors almost surely are not.
+  - Repeated visits without any signals further reduce probabilities in those neighborhoods.
+
+- **Opponent movement**  
+  - If the opponent steps on a square and doesn’t fall, that square’s probability also drops.
+  - Their chosen routes give indirect info: they tend not to walk through regions they believe are lethal, so their avoidance pattern is weak evidence about trapdoor placement.
+
+The search uses this belief in two ways:
+
+1. **Path-dependent risk in search**  
+   Along each search line, we accumulate the probability of stepping on trapdoors based on the belief + the *exact* move sequence for both players. That accumulated risk is penalized directly in the search value, not just at static leaf evaluation.
+
+2. **Evaluation-time risk term**  
+   At leaf nodes, a global risk term approximates long-run trap exposure based on:
+   - Board openness
+   - Typical distances to unexplored areas
+   - The current belief distribution
+
+Net effect: the bot “knows” when a line is probabilistically suicidal even if it looks spatially good, and it learns from both our own pathing and the opponent’s pathing.
+
+
+## Expectimax for Uncertainty
+
+Not all branches are purely adversarial:
+
+- Trapdoor outcomes and sensor signals introduce **stochasticity**.
+- Opponent behavior may be approximated as a mixture of adversarial and “typical” moves.
+
+In critical positions, AlphaChicken uses **expectimax-style nodes**:
+
+- **Max nodes**: our moves (standard negamax/maximization).
+- **Chance nodes**: trapdoor events / sensor outcomes modeled via the belief distribution; value is an expectation over possible outcomes.
+
+This lets the engine trade off:
+- High-reward but high-risk paths,
+- Safe but lower-reward ones,
+in a mathematically consistent way rather than assuming worst-case everything.
+
+---
+
+## Bitboards & Array-Based BFS
+
+The board is represented internally using **bitboards**:
+
+- Squares are packed into fixed-size integer masks.
+- Basic operations like:
+  - adjacency,
+  - reachability,
+  - region counting,
+  are done via bit operations and precomputed masks.
+
+For **Voronoi and reachability**, the engine uses **array-based BFS** instead of Python sets/dicts:
+
+- Preallocated arrays store:
+  - distances,
+  - queues,
+  - ownership markers.
+- BFS uses simple integer indices, no heap allocation in the inner loop.
+- This is significantly faster and more cache-friendly than set-based BFS, which matters because Voronoi and distance fields are recomputed constantly.
+
+Bitboards + array BFS make spatial computations fast enough to fit deep search under tight time constraints.
+
+---
+
+## Implementation & Optimization Stack
+
+The implementation is split between **C++** and optimized **Python**:
+
+- Performance-critical search routines (negamax + alpha–beta + TT) and some low-level board operations run in **C++**.
+- Higher-level logic and experimentation (heuristics, evaluation tweaks, belief updates) live in **Python**.
+- Hot Python kernels (like BFS variants or mass belief updates) are JIT-compiled using **Numba**, reducing overhead while keeping iteration speed for development.
+
+This setup gives:
+- C++-level performance on the critical path,
+- Python-level flexibility for iterating on heuristics and modeling.
