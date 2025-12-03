@@ -119,6 +119,10 @@ A small constant factor:
 
 trap_weight × (4 + 8 × openness × voronoi_factor × dist_from_start / 2)
 
+### 3.3 Entropy
+
+We didn't get to implement this, but we want to give some sort of bonus for visiting squares that would clarify our trapdoor distributions(reducing entropy). This could be done by approximating entropy gained from visiting a square and making this bonus term path-dependent. To prevent rushing the center(which we might end up just stepping on a trapdoor without getting enough information), we could also keep a visited count array to give some sort of confidence(However, we wouldn't need this if we implemented a way to deal with high variance moves in expectimax).
+ 
 
 Represents the weight of penalty for 3.1.
 
@@ -211,7 +215,7 @@ Apply strong negative signal
 
 Forces alpha–beta to avoid dead lines earlier
 
-### 7. Final Evaluation Formula (Conceptual)
+## 7. Final Evaluation Formula (Conceptual)
 
 The evaluation approximates Expected Final Egg Difference:
 
