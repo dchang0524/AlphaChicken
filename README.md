@@ -346,15 +346,7 @@ Not all branches are purely adversarial:
 - Trapdoor outcomes and sensor signals introduce **stochasticity**.
 - Opponent behavior may be approximated as a mixture of adversarial and “typical” moves.
 
-In critical positions, AlphaChicken uses **expectimax-style nodes**:
-
-- **Max nodes**: our moves (standard negamax/maximization).
-- **Chance nodes**: trapdoor events / sensor outcomes modeled via the belief distribution; value is an expectation over possible outcomes.
-
-This lets the engine trade off:
-- High-reward but high-risk paths,
-- Safe but lower-reward ones,
-in a mathematically consistent way rather than assuming worst-case everything.
+At the start of each search, we collapse high-probability trapdoor squares into fixed trap assumptions and generate a small set of plausible trap configurations. We run a full minimax search on each configuration, obtain a value for every action, and then select the move with the highest posterior‐weighted expected value. Any trapdoors outside this configuration set are still accounted for through a path-dependent risk term, ensuring the search incorporates the residual uncertainty that wasn’t explicitly enumerated.
 
 ## Bitboards & Array-Based BFS
 
