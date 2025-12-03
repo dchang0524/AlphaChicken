@@ -110,8 +110,7 @@ float Evaluator::evaluate(const GameState& state, const VoronoiInfo& vor,
 }
 
 float Evaluator::get_trap_weight(const GameState& state, const VoronoiInfo& vor) {
-    // Match Python exactly: moves_left = MAX_TURNS - turn_count
-    int moves_left = MAX_TURNS - state.turn_count;
+    int moves_left = state.turns_left_player;
     int total_moves = MAX_TURNS;
     float phase_mat = std::max(0.0f, std::min(1.0f, (float)moves_left / total_moves));
     
