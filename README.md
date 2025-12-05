@@ -123,7 +123,7 @@ This is a cheap approximation of how much space and eggs you will lose from step
 
 ### 3.3 Entropy
 
-We didn't get to implement this, but we want to give some sort of bonus for visiting squares that would clarify our trapdoor distributions(reducing entropy). This could be done by approximating entropy gained from visiting a square and making this bonus term path-dependent. To prevent rushing the center(which we might end up just stepping on a trapdoor without getting enough information), we could also keep a visited count array to give some sort of confidence(However, we wouldn't need this if we implemented a way to deal with high variance moves in expectimax).
+We didn't get to implement this, but we want to give some sort of bonus for visiting squares that would clarify our trapdoor distributions(reducing entropy). This could be done by approximating entropy gained from visiting a square and making this bonus term path-dependent. To prevent rushing the center(which we might end up just stepping on a trapdoor without getting enough information), we could also keep a visited count array to give some sort of confidence.
  
 
 Represents the weight of penalty for 3.1.
@@ -362,6 +362,7 @@ For **Voronoi and reachability**, the engine uses **array-based BFS** instead of
   - ownership markers.
 - BFS uses simple integer indices, no heap allocation in the inner loop.
 - This is significantly faster and more cache-friendly than set-based BFS, which matters because Voronoi and distance fields are recomputed constantly.
+Also consider dropping heuristic terms distance-based terms, as we can even do the Voronoi using only bit operations, and this would be a lot faster because the adjacent squares are visited parallely.
 
 Bitboards + array BFS make spatial computations fast enough to fit deep search under tight time constraints.
 
